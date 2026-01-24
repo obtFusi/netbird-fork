@@ -11,7 +11,7 @@ import (
 )
 
 // ErrACLNotSupported is returned when ACL functions are called on non-Windows platforms.
-var ErrACLNotSupported = errors.New("Windows ACL functions are only supported on Windows")
+var ErrACLNotSupported = errors.New("windows ACL functions are only supported on Windows")
 
 // ACLConfig defines the desired ACL configuration for a path.
 type ACLConfig struct {

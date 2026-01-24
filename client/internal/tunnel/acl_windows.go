@@ -126,7 +126,7 @@ func HardenPath(path string, config ACLConfig) error {
 	}
 
 	// Build security info flags
-	securityInfo := windows.DACL_SECURITY_INFORMATION | windows.OWNER_SECURITY_INFORMATION
+	securityInfo := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.OWNER_SECURITY_INFORMATION)
 
 	if config.DisableInheritance {
 		securityInfo |= windows.PROTECTED_DACL_SECURITY_INFORMATION
