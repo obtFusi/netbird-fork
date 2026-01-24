@@ -1,0 +1,270 @@
+// Machine Tunnel Fork - Windows Service Handler
+// This file implements the Windows service control manager integration
+// using native Windows APIs for optimal control.
+
+//go:build windows
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/debug"
+	"golang.org/x/sys/windows/svc/eventlog"
+
+	"github.com/netbirdio/netbird/client/internal/tunnel"
+)
+
+// serviceHandler implements svc.Handler for Windows Service Control Manager
+type serviceHandler struct {
+	// tunnel is the machine tunnel instance
+	tunnel *tunnel.MachineTunnel
+
+	// ctx is the service context
+	ctx context.Context
+
+	// cancel cancels the service context
+	cancel context.CancelFunc
+
+	// mu protects tunnel access
+	mu sync.Mutex
+
+	// stopped indicates if the service has been stopped
+	stopped bool
+}
+
+func init() {
+	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(installCmd)
+	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(statusCmd)
+}
+
+var runCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Run the service (called by Windows SCM)",
+	Long: `Run the NetBird Machine Tunnel service.
+This command is typically called by the Windows Service Control Manager.
+For debugging, use --debug to run interactively.`,
+	RunE: runService,
+}
+
+var debugMode bool
+
+func init() {
+	runCmd.Flags().BoolVar(&debugMode, "debug", false, "Run in debug mode (interactive)")
+}
+
+func runService(cmd *cobra.Command, args []string) error {
+	// Check if we're running interactively or as a service
+	isInteractive, err := svc.IsAnInteractiveSession()
+	if err != nil {
+		return fmt.Errorf("check interactive session: %w", err)
+	}
+
+	if isInteractive || debugMode {
+		// Running interactively (for debugging)
+		return runInteractive()
+	}
+
+	// Running as Windows service
+	return runAsService()
+}
+
+// runAsService runs under the Windows Service Control Manager
+func runAsService() error {
+	elog, err := eventlog.Open(ServiceName)
+	if err != nil {
+		return fmt.Errorf("open event log: %w", err)
+	}
+	defer elog.Close()
+
+	elog.Info(1, fmt.Sprintf("Starting %s service", ServiceName))
+
+	handler := &serviceHandler{}
+	err = svc.Run(ServiceName, handler)
+	if err != nil {
+		elog.Error(1, fmt.Sprintf("Service failed: %v", err))
+		return fmt.Errorf("service run: %w", err)
+	}
+
+	elog.Info(1, fmt.Sprintf("%s service stopped", ServiceName))
+	return nil
+}
+
+// runInteractive runs in interactive/debug mode
+func runInteractive() error {
+	log.Info("Running in interactive mode (Ctrl+C to stop)")
+
+	handler := &serviceHandler{}
+	err := debug.Run(ServiceName, handler)
+	if err != nil {
+		return fmt.Errorf("debug run: %w", err)
+	}
+
+	return nil
+}
+
+// Execute implements svc.Handler
+// This is the main service control loop called by Windows SCM.
+func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+	// v3.2: Only accept Stop and Shutdown (no SessionChange in MVP)
+	const cmdsAccepted = svc.AcceptStop | svc.AcceptShutdown
+
+	// Report that we're starting
+	changes <- svc.Status{State: svc.StartPending}
+
+	// Create service context
+	h.ctx, h.cancel = context.WithCancel(context.Background())
+
+	// Start the machine tunnel in a goroutine
+	// IMPORTANT: Start must return quickly (<30s) or SCM will kill us
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- h.startMachineTunnel()
+	}()
+
+	// Wait for tunnel start with timeout
+	select {
+	case err := <-startErr:
+		if err != nil {
+			log.Errorf("Failed to start machine tunnel: %v", err)
+			changes <- svc.Status{State: svc.StopPending}
+			return false, 1
+		}
+	case <-time.After(25 * time.Second):
+		// Don't fail - tunnel may still be starting, continue to Running
+		log.Warn("Machine tunnel start taking longer than expected, continuing...")
+	}
+
+	// Report that we're running
+	changes <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
+	log.Info("NetBird Machine Tunnel service is running")
+
+	// Service control loop
+	for c := range r {
+		switch c.Cmd {
+		case svc.Stop, svc.Shutdown:
+			log.Info("Received stop/shutdown request")
+			changes <- svc.Status{State: svc.StopPending}
+			h.stopMachineTunnel()
+			return false, 0
+
+		case svc.Interrogate:
+			// Report current status
+			changes <- c.CurrentStatus
+
+		default:
+			log.Warnf("Unexpected service control request: %d", c.Cmd)
+		}
+	}
+
+	return false, 0
+}
+
+// startMachineTunnel initializes and starts the Machine Tunnel
+func (h *serviceHandler) startMachineTunnel() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.stopped {
+		return fmt.Errorf("service is stopping")
+	}
+
+	log.Info("Starting Machine Tunnel...")
+
+	// Load configuration
+	config, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Create machine tunnel
+	h.tunnel, err = tunnel.NewMachineTunnel(config)
+	if err != nil {
+		return fmt.Errorf("create machine tunnel: %w", err)
+	}
+
+	// Set state change callback for logging
+	h.tunnel.SetStateChangeCallback(func(state tunnel.MachineState, err error) {
+		if err != nil {
+			log.Errorf("Machine tunnel state: %s (error: %v)", state, err)
+		} else {
+			log.Infof("Machine tunnel state: %s", state)
+		}
+	})
+
+	// Start the tunnel
+	if err := h.tunnel.Start(h.ctx); err != nil {
+		return fmt.Errorf("start tunnel: %w", err)
+	}
+
+	log.Info("Machine Tunnel started successfully")
+	return nil
+}
+
+// stopMachineTunnel stops the Machine Tunnel gracefully
+func (h *serviceHandler) stopMachineTunnel() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.stopped = true
+
+	log.Info("Stopping Machine Tunnel...")
+
+	// Cancel context first
+	if h.cancel != nil {
+		h.cancel()
+	}
+
+	// Stop tunnel with timeout
+	if h.tunnel != nil {
+		stopDone := make(chan struct{})
+		go func() {
+			if err := h.tunnel.Stop(); err != nil {
+				log.Errorf("Error stopping tunnel: %v", err)
+			}
+			close(stopDone)
+		}()
+
+		select {
+		case <-stopDone:
+			log.Info("Machine Tunnel stopped")
+		case <-time.After(10 * time.Second):
+			log.Warn("Machine Tunnel stop timed out")
+		}
+
+		// Cleanup resources (NRPT, firewall rules)
+		if err := h.tunnel.Cleanup(); err != nil {
+			log.Errorf("Error cleaning up tunnel resources: %v", err)
+		}
+	}
+}
+
+// loadConfig loads the machine tunnel configuration
+func loadConfig() (*tunnel.MachineTunnelConfig, error) {
+	// TODO: Load from configPath in T-4.x (YAML file parsing)
+	// For now, return default config with placeholder ManagementURL
+	config := tunnel.DefaultConfig()
+	if config == nil {
+		return nil, fmt.Errorf("failed to get default config")
+	}
+
+	// ManagementURL will be loaded from config file in production
+	// For now, use a placeholder that will be overwritten from config
+	if config.ManagementURL == "" {
+		// This will be set from config file in T-4.x
+		// For service startup testing, we allow empty URL but tunnel will fail to connect
+		config.ManagementURL = "https://management.netbird.io:33074"
+	}
+
+	return config, nil
+}
