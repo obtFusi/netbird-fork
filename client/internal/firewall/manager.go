@@ -5,10 +5,12 @@
 package firewall
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -22,6 +24,12 @@ const (
 
 	// DefaultInterfaceName is the default Machine Tunnel interface name
 	DefaultInterfaceName = "wg-nb-machine"
+
+	// DenyAllRuleName is the name of the deny-all rule
+	DenyAllRuleName = RuleNamePrefix + "Deny All"
+
+	// DefaultSafeModeTimeout is the default timeout for safe mode rollback
+	DefaultSafeModeTimeout = 60 * time.Second
 )
 
 // Manager manages Windows Firewall rules for the Machine Tunnel
@@ -40,6 +48,21 @@ type Manager struct {
 	// createdRules tracks all rules created by this manager
 	createdRules []string
 
+	// denyAllEnabled indicates if the deny-all rule is active
+	denyAllEnabled bool
+
+	// safeModeEnabled indicates if safe mode rollback is active
+	safeModeEnabled bool
+
+	// safeModeTimeout is the timeout for safe mode rollback
+	safeModeTimeout time.Duration
+
+	// safeModeCancel cancels the safe mode timer
+	safeModeCancel context.CancelFunc
+
+	// connectivityTestFunc tests if DC is reachable
+	connectivityTestFunc func() error
+
 	// closed indicates if the manager has been closed
 	closed bool
 }
@@ -57,6 +80,20 @@ type ManagerConfig struct {
 
 	// UseRestrictedRPC uses GPO-restricted RPC port range (5000-5100)
 	UseRestrictedRPC bool
+
+	// EnableDenyDefault enables the deny-all rule after allow rules
+	EnableDenyDefault bool
+
+	// SafeModeEnabled enables safe mode with auto-rollback
+	// If connectivity test fails, rules are removed automatically
+	SafeModeEnabled bool
+
+	// SafeModeTimeout is the timeout for safe mode rollback (default 60s)
+	SafeModeTimeout time.Duration
+
+	// ConnectivityTestFunc is a function to test DC connectivity
+	// Used during safe mode to verify rules don't break connectivity
+	ConnectivityTestFunc func() error
 }
 
 // NewManager creates a new firewall manager
@@ -91,11 +128,20 @@ func NewManager(config *ManagerConfig) (*Manager, error) {
 		adPorts.RPCDynamicStart, adPorts.RPCDynamicEnd = RestrictedRPCPorts()
 	}
 
+	safeModeTimeout := config.SafeModeTimeout
+	if safeModeTimeout == 0 {
+		safeModeTimeout = DefaultSafeModeTimeout
+	}
+
 	return &Manager{
-		interfaceName: interfaceName,
-		dcIPs:         config.DCIPs,
-		adPorts:       adPorts,
-		createdRules:  make([]string, 0),
+		interfaceName:        interfaceName,
+		dcIPs:                config.DCIPs,
+		adPorts:              adPorts,
+		createdRules:         make([]string, 0),
+		denyAllEnabled:       false,
+		safeModeEnabled:      config.SafeModeEnabled,
+		safeModeTimeout:      safeModeTimeout,
+		connectivityTestFunc: config.ConnectivityTestFunc,
 	}, nil
 }
 
@@ -354,4 +400,168 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// EnableDenyDefault adds the deny-all rule
+// This should be called AFTER Configure() to create the catch-all block
+func (m *Manager) EnableDenyDefault() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return fmt.Errorf("firewall manager is closed")
+	}
+
+	if m.denyAllEnabled {
+		log.Debug("Deny-all rule already enabled")
+		return nil
+	}
+
+	log.Info("Enabling deny-default firewall rule")
+
+	if err := AddDenyAllRule(m.interfaceName); err != nil {
+		return fmt.Errorf("add deny-all rule: %w", err)
+	}
+
+	m.denyAllEnabled = true
+	m.createdRules = append(m.createdRules, DenyAllRuleName)
+
+	log.Info("Deny-default rule enabled - all non-AD traffic is now blocked")
+	return nil
+}
+
+// DisableDenyDefault removes the deny-all rule
+func (m *Manager) DisableDenyDefault() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.denyAllEnabled {
+		log.Debug("Deny-all rule not enabled")
+		return nil
+	}
+
+	log.Info("Disabling deny-default firewall rule")
+
+	if err := RemoveDenyAllRule(); err != nil {
+		return fmt.Errorf("remove deny-all rule: %w", err)
+	}
+
+	m.denyAllEnabled = false
+
+	// Remove from tracked rules
+	newRules := make([]string, 0, len(m.createdRules)-1)
+	for _, r := range m.createdRules {
+		if r != DenyAllRuleName {
+			newRules = append(newRules, r)
+		}
+	}
+	m.createdRules = newRules
+
+	log.Info("Deny-default rule disabled")
+	return nil
+}
+
+// IsDenyDefaultEnabled returns whether the deny-all rule is active
+func (m *Manager) IsDenyDefaultEnabled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.denyAllEnabled
+}
+
+// ConfigureWithDenyDefault creates all allow rules and then adds the deny-all rule
+// If safe mode is enabled, it will auto-rollback if connectivity test fails
+func (m *Manager) ConfigureWithDenyDefault() error {
+	// First configure the allow rules
+	if err := m.Configure(); err != nil {
+		return fmt.Errorf("configure allow rules: %w", err)
+	}
+
+	// If safe mode is enabled, start the safety timer
+	if m.safeModeEnabled {
+		if err := m.startSafeMode(); err != nil {
+			log.WithError(err).Warn("Failed to start safe mode")
+		}
+	}
+
+	// Add the deny-all rule
+	if err := m.EnableDenyDefault(); err != nil {
+		// If deny-all fails, cleanup allow rules
+		log.WithError(err).Warn("Failed to enable deny-default, cleaning up")
+		m.RemoveAllRules()
+		return fmt.Errorf("enable deny-default: %w", err)
+	}
+
+	// If safe mode is enabled, verify connectivity
+	if m.safeModeEnabled && m.connectivityTestFunc != nil {
+		if err := m.connectivityTestFunc(); err != nil {
+			log.WithError(err).Warn("Connectivity test failed, rolling back firewall rules")
+			m.Cleanup()
+			return fmt.Errorf("connectivity test failed after firewall rules: %w", err)
+		}
+
+		// Connectivity test passed, cancel safe mode timer
+		m.cancelSafeMode()
+		log.Info("Connectivity test passed, firewall rules confirmed working")
+	}
+
+	return nil
+}
+
+// startSafeMode starts the safe mode timer
+// If ConfirmSafeMode is not called before timeout, rules are rolled back
+func (m *Manager) startSafeMode() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.safeModeCancel != nil {
+		// Already in safe mode
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.safeModeCancel = cancel
+
+	log.WithField("timeout", m.safeModeTimeout).Info("Safe mode started - rules will auto-rollback if not confirmed")
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Safe mode cancelled (confirmed or explicitly cancelled)
+			return
+		case <-time.After(m.safeModeTimeout):
+			// Timeout - rollback
+			log.Warn("Safe mode timeout reached - rolling back firewall rules")
+			if err := m.Cleanup(); err != nil {
+				log.WithError(err).Error("Failed to rollback firewall rules")
+			}
+		}
+	}()
+
+	return nil
+}
+
+// cancelSafeMode cancels the safe mode timer
+func (m *Manager) cancelSafeMode() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.safeModeCancel != nil {
+		m.safeModeCancel()
+		m.safeModeCancel = nil
+		log.Debug("Safe mode cancelled")
+	}
+}
+
+// ConfirmSafeMode confirms that the firewall rules are working correctly
+// This cancels the safe mode auto-rollback timer
+func (m *Manager) ConfirmSafeMode() {
+	m.cancelSafeMode()
+	log.Info("Safe mode confirmed - firewall rules will persist")
+}
+
+// SetConnectivityTestFunc sets the connectivity test function
+func (m *Manager) SetConnectivityTestFunc(fn func() error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.connectivityTestFunc = fn
 }

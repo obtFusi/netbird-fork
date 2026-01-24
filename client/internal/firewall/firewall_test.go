@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"testing"
+	"time"
 )
 
 func TestDefaultADPorts(t *testing.T) {
@@ -343,5 +344,123 @@ func TestRuleNameConstants(t *testing.T) {
 
 	if DefaultInterfaceName != "wg-nb-machine" {
 		t.Errorf("DefaultInterfaceName = %q, want 'wg-nb-machine'", DefaultInterfaceName)
+	}
+
+	if DenyAllRuleName != "NetBird Machine - Deny All" {
+		t.Errorf("DenyAllRuleName = %q, want 'NetBird Machine - Deny All'", DenyAllRuleName)
+	}
+}
+
+func TestManagerDenyDefaultState(t *testing.T) {
+	m, err := NewManager(&ManagerConfig{
+		DCIPs: []string{"192.168.100.20"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Initially deny-all should be disabled
+	if m.IsDenyDefaultEnabled() {
+		t.Error("Deny-default should be disabled initially")
+	}
+}
+
+func TestManagerSafeModeConfig(t *testing.T) {
+	callbackCalled := false
+
+	m, err := NewManager(&ManagerConfig{
+		DCIPs:           []string{"192.168.100.20"},
+		SafeModeEnabled: true,
+		SafeModeTimeout: 30 * time.Second,
+		ConnectivityTestFunc: func() error {
+			callbackCalled = true
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	if !m.safeModeEnabled {
+		t.Error("Safe mode should be enabled")
+	}
+
+	if m.safeModeTimeout != 30*time.Second {
+		t.Errorf("safeModeTimeout = %v, want 30s", m.safeModeTimeout)
+	}
+
+	if m.connectivityTestFunc == nil {
+		t.Error("Connectivity test func should be set")
+	}
+
+	_ = callbackCalled // Callback will be called during ConfigureWithDenyDefault
+}
+
+func TestManagerDefaultSafeModeTimeout(t *testing.T) {
+	m, err := NewManager(&ManagerConfig{
+		DCIPs:           []string{"192.168.100.20"},
+		SafeModeEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	if m.safeModeTimeout != DefaultSafeModeTimeout {
+		t.Errorf("safeModeTimeout = %v, want %v", m.safeModeTimeout, DefaultSafeModeTimeout)
+	}
+}
+
+func TestManagerSetConnectivityTestFunc(t *testing.T) {
+	m, err := NewManager(&ManagerConfig{
+		DCIPs: []string{"192.168.100.20"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	if m.connectivityTestFunc != nil {
+		t.Error("Connectivity test func should be nil initially")
+	}
+
+	testCalled := false
+	m.SetConnectivityTestFunc(func() error {
+		testCalled = true
+		return nil
+	})
+
+	if m.connectivityTestFunc == nil {
+		t.Error("Connectivity test func should be set after SetConnectivityTestFunc")
+	}
+
+	_ = testCalled
+}
+
+func TestManagerConfirmSafeMode(t *testing.T) {
+	m, err := NewManager(&ManagerConfig{
+		DCIPs:           []string{"192.168.100.20"},
+		SafeModeEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// ConfirmSafeMode should not panic even when no safe mode is active
+	m.ConfirmSafeMode()
+
+	// Verify no panic with nil cancel func
+	if m.safeModeCancel != nil {
+		t.Error("safeModeCancel should be nil after ConfirmSafeMode")
+	}
+}
+
+func TestManagerEnableDenyDefaultClosed(t *testing.T) {
+	m, _ := NewManager(&ManagerConfig{
+		DCIPs: []string{"192.168.100.20"},
+	})
+
+	m.closed = true
+
+	if err := m.EnableDenyDefault(); err == nil {
+		t.Error("EnableDenyDefault() should return error when manager is closed")
 	}
 }
