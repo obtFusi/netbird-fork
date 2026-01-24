@@ -6,6 +6,7 @@
 package auth
 
 import (
+	"crypto/x509"
 	"fmt"
 
 	"github.com/netbirdio/netbird/client/internal/tunnel"
@@ -28,7 +29,39 @@ func FindMachineCertificate(criteria CertSelectionCriteria) (*WinCertSigner, err
 	return nil, fmt.Errorf("Windows Certificate Store is only available on Windows")
 }
 
-// ParseMachineIdentity is not implemented on non-Windows platforms
-func ParseMachineIdentity(cert interface{}) (*tunnel.MachineIdentity, error) {
-	return nil, fmt.Errorf("ParseMachineIdentity is only available on Windows")
+// ParseMachineIdentity extracts machine identity from a certificate's SAN DNSName
+// This is a shared implementation that works on all platforms
+func ParseMachineIdentity(cert *x509.Certificate) (*tunnel.MachineIdentity, error) {
+	if cert == nil {
+		return nil, fmt.Errorf("certificate is nil")
+	}
+
+	// Find first SAN DNSName that looks like hostname.domain
+	for _, dnsName := range cert.DNSNames {
+		hostname, domain, ok := splitFQDN(dnsName)
+		if ok {
+			return &tunnel.MachineIdentity{
+				Hostname:       hostname,
+				Domain:         domain,
+				FQDN:           dnsName,
+				CertThumbprint: "", // No thumbprint calculation on non-Windows
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no valid SAN DNSName found in certificate")
+}
+
+// splitFQDN splits "hostname.domain.tld" into ("hostname", "domain.tld")
+func splitFQDN(fqdn string) (hostname, domain string, ok bool) {
+	// Find first dot
+	for i, c := range fqdn {
+		if c == '.' {
+			if i > 0 && i < len(fqdn)-1 {
+				return fqdn[:i], fqdn[i+1:], true
+			}
+			return "", "", false
+		}
+	}
+	return "", "", false
 }
