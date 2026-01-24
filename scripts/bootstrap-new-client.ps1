@@ -1,106 +1,153 @@
 <#
 .SYNOPSIS
-    Bootstrap script for new NetBird Machine Tunnel clients.
-    Performs Phase 1 (Setup-Key) -> Domain Join -> Certificate Enrollment -> Phase 2 (mTLS).
+    Bootstraps a new Windows client for NetBird Machine Tunnel.
 
 .DESCRIPTION
-    This script automates the full bootstrap process for a new Windows client:
-    1. Pre-Tunnel NTP sync (pool.ntp.org)
-    2. Install/Start NetBird Machine Service with Setup-Key
-    3. Wait for tunnel establishment
-    4. Verify DC connectivity via tunnel
-    5. NTP sync with DC (Kerberos requirement)
-    6. Domain Join
-    7. Certificate Enrollment via AD CS
-    8. Update NetBird config for mTLS
-    9. Restart service for Phase 2
+    This script performs the complete two-phase bootstrap workflow:
+
+    Phase 1 (Setup-Key):
+    1. Install NetBird Machine Binary
+    2. Configure with Setup-Key (DPAPI encrypted)
+    3. Start service, establish tunnel
+    4. Verify DC connectivity
+
+    Phase 2 (Domain Join + mTLS):
+    5. Sync NTP (required for Kerberos)
+    6. Join Active Directory domain
+    7. Trigger certificate enrollment
+    8. Update config for mTLS (Smart Cert Selection)
+    9. Restart service with mTLS
+
+    IMPORTANT: Revoke the setup-key in NetBird Dashboard after bootstrap!
 
 .PARAMETER SetupKey
-    The one-time Setup-Key from NetBird Management (UUID format).
+    Temporary setup key from NetBird Dashboard.
+    - 24 hour TTL (configurable in dashboard)
+    - One-time use per machine
+    - MUST be revoked after successful bootstrap
 
 .PARAMETER DomainName
-    The FQDN of the Active Directory domain (e.g., "corp.local").
+    Active Directory domain to join (e.g., corp.local).
 
-.PARAMETER DCAddress
-    The IP address of the Domain Controller (e.g., "192.168.100.20").
+.PARAMETER ManagementURL
+    NetBird Management Server URL (default: from existing config or prompt).
 
-.PARAMETER OUPath
-    Optional. The OU path for the computer object.
-    Format: "OU=Computers,DC=corp,DC=local"
+.PARAMETER DomainController
+    Optional: Specific DC IP to use for connectivity test.
+    If not specified, uses DNS to discover DCs.
 
-.PARAMETER CertTemplateName
-    The AD CS certificate template name for machine certificates.
-    Default: "NetBirdMachineTunnel"
+.PARAMETER SkipDomainJoin
+    Skip domain join (useful if machine is already domain-joined).
 
-.PARAMETER NoRestart
-    Skip automatic restart after domain join.
+.PARAMETER SkipCertEnrollment
+    Skip certificate enrollment (useful for manual cert management).
 
-.PARAMETER WhatIf
-    Show what would be done without making changes.
+.PARAMETER BinaryPath
+    Path to netbird-machine.exe binary (if not already installed).
+
+.PARAMETER Force
+    Skip confirmation prompts.
 
 .EXAMPLE
-    .\bootstrap-new-client.ps1 -SetupKey "a1b2c3d4-e5f6-7890-abcd-ef1234567890" -DomainName "corp.local" -DCAddress "192.168.100.20"
+    .\bootstrap-new-client.ps1 -SetupKey "nb-setup-abc123" -DomainName "corp.local"
+    Full bootstrap with prompts.
+
+.EXAMPLE
+    .\bootstrap-new-client.ps1 -SetupKey "nb-setup-abc123" -DomainName "corp.local" -Force
+    Full bootstrap without prompts.
+
+.EXAMPLE
+    .\bootstrap-new-client.ps1 -SetupKey "nb-setup-abc123" -DomainName "corp.local" -SkipDomainJoin
+    Bootstrap for already domain-joined machine.
 
 .NOTES
-    Requires: Administrator privileges, PowerShell 5.1+
+    Requires: Administrator privileges
     Author: NetBird Machine Tunnel Fork
     Version: 1.0.0
+    Security: Setup-Key is redacted in logs (only last 4 chars shown)
 #>
+
+#Requires -RunAsAdministrator
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')]
+    [ValidateNotNullOrEmpty()]
     [string]$SetupKey,
 
     [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
+    [ValidatePattern('^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$')]
     [string]$DomainName,
 
-    [Parameter(Mandatory = $true)]
-    [ValidatePattern('^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')]
-    [string]$DCAddress,
+    [Parameter(Mandatory = $false)]
+    [ValidatePattern('^https?://')]
+    [string]$ManagementURL,
 
     [Parameter(Mandatory = $false)]
-    [string]$OUPath = "",
+    [string]$DomainController,
 
     [Parameter(Mandatory = $false)]
-    [string]$CertTemplateName = "NetBirdMachineTunnel",
+    [switch]$SkipDomainJoin,
 
     [Parameter(Mandatory = $false)]
-    [switch]$NoRestart
+    [switch]$SkipCertEnrollment,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateScript({ Test-Path $_ })]
+    [string]$BinaryPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'Continue'
 
-# Configuration paths
-$NetBirdConfigPath = "$env:ProgramData\NetBird\config.yaml"
-$NetBirdServiceName = "NetBirdMachine"
-$TunnelInterface = "wg-nb-machine"
+# Configuration
+$ServiceName = "NetBirdMachine"
+$InterfaceName = "wg-nb-machine"
+$ConfigDir = "$env:ProgramData\NetBird"
+$ConfigPath = "$ConfigDir\config.yaml"
+$InstallPath = "$env:ProgramFiles\NetBird Machine"
+$LogPath = "$ConfigDir\bootstrap.log"
+
+# Security: Redact setup key in logs (show only last 4 chars)
+$SetupKeyRedacted = if ($SetupKey.Length -gt 4) {
+    "***" + $SetupKey.Substring($SetupKey.Length - 4)
+} else {
+    "****"
+}
 
 #region Helper Functions
 
 function Write-Step {
-    param([string]$Message)
-    Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "  $Message" -ForegroundColor Cyan
-    Write-Host "========================================`n" -ForegroundColor Cyan
+    param([string]$Step, [string]$Message)
+    $text = "[$Step] $Message"
+    Write-Host $text -ForegroundColor Cyan
+    Add-Content -Path $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $text"
 }
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "[OK] $Message" -ForegroundColor Green
-}
-
-function Write-Warning {
-    param([string]$Message)
-    Write-Host "[WARN] $Message" -ForegroundColor Yellow
+    Write-Host "  [OK] $Message" -ForegroundColor Green
+    Add-Content -Path $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')   [OK] $Message"
 }
 
 function Write-Failure {
     param([string]$Message)
-    Write-Host "[FAIL] $Message" -ForegroundColor Red
+    Write-Host "  [FAIL] $Message" -ForegroundColor Red
+    Add-Content -Path $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')   [FAIL] $Message"
+}
+
+function Write-Warning {
+    param([string]$Message)
+    Write-Host "  [WARN] $Message" -ForegroundColor Yellow
+    Add-Content -Path $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')   [WARN] $Message"
+}
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host "  $Message" -ForegroundColor Gray
+    Add-Content -Path $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')   $Message"
 }
 
 function Test-Administrator {
@@ -108,368 +155,472 @@ function Test-Administrator {
     return $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Test-DCConnectivity {
-    param([string]$DC, [int]$Port)
-
+function Get-DCFromDNS {
+    param([string]$Domain)
     try {
-        $result = Test-NetConnection -ComputerName $DC -Port $Port -WarningAction SilentlyContinue -ErrorAction Stop
-        return $result.TcpTestSucceeded
+        $dcs = Resolve-DnsName -Name "_ldap._tcp.dc._msdcs.$Domain" -Type SRV -ErrorAction Stop
+        if ($dcs) {
+            $dcName = $dcs[0].NameTarget
+            $dcIPs = Resolve-DnsName -Name $dcName -Type A -ErrorAction Stop
+            return $dcIPs[0].IPAddress
+        }
     } catch {
-        return $false
+        return $null
     }
+    return $null
+}
+
+function Test-DCConnectivity {
+    param(
+        [string]$DC,
+        [int]$TimeoutSec = 5
+    )
+
+    $ports = @(
+        @{ Port = 389; Name = "LDAP" },
+        @{ Port = 88; Name = "Kerberos" },
+        @{ Port = 53; Name = "DNS" }
+    )
+
+    $allOk = $true
+    foreach ($p in $ports) {
+        $result = Test-NetConnection -ComputerName $DC -Port $p.Port -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+        if ($result.TcpTestSucceeded) {
+            Write-Info "  $($p.Name) (TCP $($p.Port)): OK"
+        } else {
+            Write-Info "  $($p.Name) (TCP $($p.Port)): FAILED"
+            $allOk = $false
+        }
+    }
+
+    return $allOk
 }
 
 function Wait-TunnelUp {
-    param(
-        [int]$TimeoutSeconds = 60,
-        [int]$CheckIntervalSeconds = 2
-    )
+    param([int]$TimeoutSeconds = 60)
 
     $elapsed = 0
     while ($elapsed -lt $TimeoutSeconds) {
-        # Check if tunnel interface exists
-        $interface = Get-NetAdapter -Name $TunnelInterface -ErrorAction SilentlyContinue
-        if ($interface -and $interface.Status -eq 'Up') {
+        $adapter = Get-NetAdapter -Name $InterfaceName -ErrorAction SilentlyContinue
+        if ($adapter -and $adapter.Status -eq 'Up') {
             return $true
         }
-
-        Start-Sleep -Seconds $CheckIntervalSeconds
-        $elapsed += $CheckIntervalSeconds
+        Start-Sleep -Seconds 2
+        $elapsed += 2
         Write-Host "." -NoNewline
     }
     Write-Host ""
     return $false
 }
 
-function Get-TimeDifferenceSeconds {
-    param([string]$NtpServer)
+function Find-MachineCertificate {
+    # Smart Cert Selection: Find the best machine certificate
+    $certs = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+        # Must have Client Authentication EKU
+        $hasClientAuth = $_.EnhancedKeyUsageList | Where-Object { $_.ObjectId -eq "1.3.6.1.5.5.7.3.2" }
 
-    try {
-        $output = w32tm /stripchart /computer:$NtpServer /samples:1 /dataonly 2>&1
-        if ($output -match '([+-]?\d+\.\d+)s') {
-            return [math]::Abs([double]$Matches[1])
-        }
-    } catch {
-        Write-Warning "Could not measure time difference: $_"
+        # Must have SAN with machine DNS name
+        $hasSAN = $_.DnsNameList.Count -gt 0
+
+        # Must not be expired
+        $notExpired = $_.NotAfter -gt (Get-Date)
+
+        # Must be valid (not before)
+        $isValid = $_.NotBefore -lt (Get-Date)
+
+        $hasClientAuth -and $hasSAN -and $notExpired -and $isValid
+    } | Sort-Object NotAfter -Descending
+
+    if ($certs) {
+        return $certs[0]
     }
     return $null
 }
 
 #endregion
 
-#region Main Script
+#region Pre-flight Checks
 
-# Check prerequisites
+# Check administrator
 if (-not (Test-Administrator)) {
     throw "This script must be run as Administrator"
 }
 
+# Create directories
+if (-not (Test-Path $ConfigDir)) {
+    New-Item -Path $ConfigDir -ItemType Directory -Force | Out-Null
+}
+
+# Initialize log
+"" | Out-File $LogPath -Force
+Add-Content -Path $LogPath -Value "=== NetBird Machine Bootstrap Log ==="
+Add-Content -Path $LogPath -Value "Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Add-Content -Path $LogPath -Value "Setup-Key: $SetupKeyRedacted"
+Add-Content -Path $LogPath -Value "Domain: $DomainName"
+Add-Content -Path $LogPath -Value ""
+
+#endregion
+
+#region Main Script
+
 Write-Host @"
 
-╔═══════════════════════════════════════════════════════════════════╗
-║          NetBird Machine Tunnel Bootstrap Script                  ║
-║                                                                   ║
-║  Phase 1: Setup-Key → Domain Join → Cert → Phase 2: mTLS         ║
-╚═══════════════════════════════════════════════════════════════════╝
++=====================================================================+
+|          NetBird Machine Tunnel - Client Bootstrap                  |
++=====================================================================+
+
+Setup-Key: $SetupKeyRedacted
+Domain:    $DomainName
 
 "@ -ForegroundColor Cyan
 
-Write-Host "Configuration:" -ForegroundColor White
-Write-Host "  Domain:    $DomainName"
-Write-Host "  DC:        $DCAddress"
-Write-Host "  Setup-Key: $($SetupKey.Substring(0,8))..."
-if ($OUPath) { Write-Host "  OU Path:   $OUPath" }
-Write-Host ""
-
-# ============================================
-# Step 1: Pre-Tunnel NTP Sync
-# ============================================
-Write-Step "Step 1: Pre-Tunnel NTP Sync (Public NTP)"
-
-if ($PSCmdlet.ShouldProcess("W32Time", "Configure public NTP")) {
-    try {
-        # Use public NTP before tunnel is up
-        w32tm /config /manualpeerlist:"pool.ntp.org" /syncfromflags:manual /reliable:no /update | Out-Null
-        Restart-Service W32Time -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        w32tm /resync /nowait | Out-Null
-        Write-Success "Public NTP sync initiated"
-    } catch {
-        Write-Warning "Public NTP sync failed: $_ (continuing...)"
+# Confirmation
+if (-not $Force) {
+    $confirm = Read-Host "This will bootstrap the machine for NetBird. Continue? (y/N)"
+    if ($confirm -ne 'y' -and $confirm -ne 'Y') {
+        Write-Host "Aborted." -ForegroundColor Yellow
+        exit 0
     }
 }
 
 # ============================================
-# Step 2: Start NetBird Service with Setup-Key
+# Step 1: Install Binary (if provided)
 # ============================================
-Write-Step "Step 2: Starting NetBird Machine Service (Phase 1: Setup-Key)"
+Write-Step "1/9" "Installing NetBird Machine binary"
 
-if ($PSCmdlet.ShouldProcess($NetBirdServiceName, "Install and start with Setup-Key")) {
-    # Check if service exists
-    $service = Get-Service -Name $NetBirdServiceName -ErrorAction SilentlyContinue
-
-    if (-not $service) {
-        throw "NetBird Machine Service is not installed. Run the installer first."
+if ($BinaryPath) {
+    if (-not (Test-Path $InstallPath)) {
+        New-Item -Path $InstallPath -ItemType Directory -Force | Out-Null
     }
 
-    # Update config with setup key
-    if (Test-Path $NetBirdConfigPath) {
-        $config = Get-Content $NetBirdConfigPath -Raw
-        if ($config -notmatch 'setup_key:') {
-            Add-Content $NetBirdConfigPath "`nsetup_key: $SetupKey"
+    $targetBinary = Join-Path $InstallPath "netbird-machine.exe"
+    Copy-Item -Path $BinaryPath -Destination $targetBinary -Force
+    Write-Success "Binary installed to: $targetBinary"
+
+    # Install service
+    if ($PSCmdlet.ShouldProcess($targetBinary, "Install service")) {
+        $result = & $targetBinary install 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Service installed"
         } else {
-            $config = $config -replace 'setup_key:.*', "setup_key: $SetupKey"
-            Set-Content $NetBirdConfigPath $config
+            Write-Failure "Service install failed: $result"
+            throw "Service installation failed"
         }
-        Write-Success "Config updated with Setup-Key"
+    }
+} else {
+    $existingBinary = Get-Command netbird-machine.exe -ErrorAction SilentlyContinue
+    if ($existingBinary) {
+        Write-Success "Using existing binary: $($existingBinary.Source)"
     } else {
-        throw "NetBird config not found at $NetBirdConfigPath"
+        Write-Failure "Binary not found and -BinaryPath not specified"
+        throw "NetBird Machine binary not found. Specify -BinaryPath or install manually."
+    }
+}
+
+# ============================================
+# Step 2: Get Management URL
+# ============================================
+Write-Step "2/9" "Configuring management URL"
+
+if (-not $ManagementURL) {
+    # Try to read from existing config
+    if (Test-Path $ConfigPath) {
+        $existingConfig = Get-Content $ConfigPath -Raw
+        if ($existingConfig -match 'management_url:\s*"([^"]+)"') {
+            $ManagementURL = $Matches[1]
+            Write-Success "Using existing management URL: $ManagementURL"
+        }
     }
 
-    # Start/Restart service
+    if (-not $ManagementURL) {
+        $ManagementURL = Read-Host "Enter Management Server URL (e.g., https://netbird.example.com:443)"
+        if (-not $ManagementURL) {
+            throw "Management URL is required"
+        }
+    }
+} else {
+    Write-Success "Management URL: $ManagementURL"
+}
+
+# ============================================
+# Step 3: Create Phase 1 Config (Setup-Key)
+# ============================================
+Write-Step "3/9" "Creating Phase 1 config (Setup-Key authentication)"
+
+$phase1Config = @"
+# NetBird Machine Tunnel - Phase 1 (Setup-Key Bootstrap)
+# Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+# WARNING: Setup-Key will be removed after mTLS enrollment!
+
+management_url: "$ManagementURL"
+setup_key: "$SetupKey"
+tunnel_mode: "machine"
+
+# Phase 1: Using Setup-Key for initial authentication
+# After domain join + cert enrollment, this will switch to mTLS
+"@
+
+if ($PSCmdlet.ShouldProcess($ConfigPath, "Write Phase 1 config")) {
+    $phase1Config | Out-File $ConfigPath -Encoding UTF8 -Force
+    Write-Success "Config written to: $ConfigPath"
+}
+
+# ============================================
+# Step 4: Start Service & Establish Tunnel
+# ============================================
+Write-Step "4/9" "Starting service and establishing tunnel"
+
+if ($PSCmdlet.ShouldProcess($ServiceName, "Start service")) {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        throw "Service $ServiceName not found. Is the binary installed?"
+    }
+
     if ($service.Status -eq 'Running') {
-        Restart-Service $NetBirdServiceName
-    } else {
-        Start-Service $NetBirdServiceName
+        Stop-Service -Name $ServiceName -Force
+        Start-Sleep -Seconds 2
     }
 
+    Start-Service -Name $ServiceName
     Write-Success "Service started"
 
     # Wait for tunnel
-    Write-Host "Waiting for tunnel to establish" -NoNewline
-    if (-not (Wait-TunnelUp -TimeoutSeconds 60)) {
-        throw "Tunnel did not come up within 60 seconds. Check NetBird logs."
-    }
-    Write-Success "Tunnel is UP"
-}
+    Write-Host "  Waiting for tunnel interface" -NoNewline
+    if (Wait-TunnelUp -TimeoutSeconds 60) {
+        Write-Success "Tunnel established"
 
-# ============================================
-# Step 3: Verify DC Connectivity via Tunnel
-# ============================================
-Write-Step "Step 3: Verifying DC Connectivity via Tunnel"
-
-$requiredPorts = @(
-    @{Name = "LDAP"; Port = 389},
-    @{Name = "Kerberos"; Port = 88},
-    @{Name = "DNS"; Port = 53}
-)
-
-$allReachable = $true
-foreach ($port in $requiredPorts) {
-    Write-Host "  Testing $($port.Name) (port $($port.Port))... " -NoNewline
-    if (Test-DCConnectivity -DC $DCAddress -Port $port.Port) {
-        Write-Success "OK"
+        # Show interface details
+        $adapter = Get-NetAdapter -Name $InterfaceName
+        $ipConfig = Get-NetIPAddress -InterfaceAlias $InterfaceName -ErrorAction SilentlyContinue
+        Write-Info "Interface: $($adapter.Name) - $($adapter.Status)"
+        if ($ipConfig) {
+            Write-Info "IP Address: $($ipConfig.IPAddress)"
+        }
     } else {
-        Write-Failure "FAILED"
-        $allReachable = $false
+        Write-Failure "Tunnel did not come up within 60 seconds"
+        Write-Warning "Check service logs: Get-EventLog -LogName Application -Source $ServiceName -Newest 20"
+        throw "Tunnel establishment failed"
     }
 }
 
-if (-not $allReachable) {
-    throw "DC connectivity check failed. Ensure the tunnel routes DC traffic correctly."
+# ============================================
+# Step 5: Discover and Verify DC Connectivity
+# ============================================
+Write-Step "5/9" "Verifying Domain Controller connectivity"
+
+$dcIP = $DomainController
+if (-not $dcIP) {
+    Write-Info "Discovering DC via DNS..."
+    $dcIP = Get-DCFromDNS -Domain $DomainName
 }
-Write-Success "All required DC ports reachable via tunnel"
+
+if (-not $dcIP) {
+    Write-Warning "Could not discover DC via DNS"
+    $dcIP = Read-Host "Enter Domain Controller IP"
+}
+
+Write-Info "Testing connectivity to DC: $dcIP"
+if (Test-DCConnectivity -DC $dcIP) {
+    Write-Success "DC reachable via tunnel"
+} else {
+    Write-Failure "DC not fully reachable"
+    Write-Warning "Some services may fail. Continue anyway? (y/N)"
+    $continueAnyway = Read-Host
+    if ($continueAnyway -ne 'y' -and $continueAnyway -ne 'Y') {
+        throw "DC connectivity check failed"
+    }
+}
 
 # ============================================
-# Step 4: NTP Sync with DC (Kerberos Requirement)
+# Step 6: NTP Sync (Critical for Kerberos!)
 # ============================================
-Write-Step "Step 4: NTP Sync with Domain Controller"
+Write-Step "6/9" "Configuring NTP (required for Kerberos, tolerance +/- 5 min)"
 
-if ($PSCmdlet.ShouldProcess("W32Time", "Configure DC NTP")) {
-    # Configure DC as NTP source
-    w32tm /config /manualpeerlist:"$DCAddress" /syncfromflags:manual /reliable:no /update | Out-Null
+if ($PSCmdlet.ShouldProcess("W32Time", "Configure NTP")) {
+    # Configure NTP to use DC
+    w32tm /config /manualpeerlist:"$dcIP" /syncfromflags:manual /reliable:no /update 2>&1 | Out-Null
+
+    # Restart time service
     Restart-Service W32Time -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
-    w32tm /resync /nowait | Out-Null
+    Start-Sleep -Seconds 2
 
-    # Check time difference
-    $timeDiff = Get-TimeDifferenceSeconds -NtpServer $DCAddress
-    if ($null -ne $timeDiff) {
-        if ($timeDiff -gt 300) {
-            Write-Warning "Time difference is ${timeDiff}s (>5min). Kerberos may fail!"
-            Write-Host "  Waiting for sync..." -NoNewline
-            Start-Sleep -Seconds 10
-            w32tm /resync /nowait | Out-Null
-            Start-Sleep -Seconds 5
-            $timeDiff = Get-TimeDifferenceSeconds -NtpServer $DCAddress
-        }
+    # Force sync
+    w32tm /resync /nowait 2>&1 | Out-Null
 
-        if ($null -ne $timeDiff -and $timeDiff -le 300) {
-            Write-Success "Time synchronized (diff: ${timeDiff}s)"
+    Write-Success "NTP configured to sync with: $dcIP"
+
+    # Check time offset
+    $timeStatus = w32tm /stripchart /computer:$dcIP /samples:1 /dataonly 2>&1
+    if ($timeStatus -match '([+-]?\d+\.\d+)s') {
+        $offset = [math]::Abs([double]$Matches[1])
+        if ($offset -lt 300) {
+            Write-Success "Time offset: ${offset}s (within Kerberos tolerance)"
         } else {
-            Write-Warning "Could not verify time sync. Proceeding with caution."
+            Write-Warning "Time offset: ${offset}s (exceeds 5 min Kerberos tolerance!)"
         }
+    }
+}
+
+# ============================================
+# Step 7: Domain Join
+# ============================================
+if (-not $SkipDomainJoin) {
+    Write-Step "7/9" "Joining Active Directory domain: $DomainName"
+
+    # Check if already joined
+    $computerSystem = Get-WmiObject Win32_ComputerSystem
+    if ($computerSystem.PartOfDomain -and $computerSystem.Domain -eq $DomainName) {
+        Write-Success "Already joined to $DomainName"
     } else {
-        Write-Warning "Could not measure time difference. Proceeding..."
+        if ($PSCmdlet.ShouldProcess($DomainName, "Join domain")) {
+            Write-Host ""
+            Write-Host "  Enter credentials for domain join:" -ForegroundColor Yellow
+            $credential = Get-Credential -Message "Domain Admin credentials for $DomainName"
+
+            try {
+                Add-Computer -DomainName $DomainName -Credential $credential -Restart:$false -Force
+                Write-Success "Domain join successful (reboot required later)"
+            } catch {
+                Write-Failure "Domain join failed: $_"
+                throw "Domain join failed"
+            }
+        }
     }
-}
-
-# ============================================
-# Step 5: Domain Join
-# ============================================
-Write-Step "Step 5: Domain Join"
-
-# Check if already joined
-$computerSystem = Get-WmiObject Win32_ComputerSystem
-if ($computerSystem.PartOfDomain -and $computerSystem.Domain -eq $DomainName) {
-    Write-Success "Computer is already joined to $DomainName"
 } else {
-    if ($PSCmdlet.ShouldProcess($DomainName, "Join domain")) {
-        Write-Host "Joining domain: $DomainName"
-        Write-Host "(You will be prompted for domain admin credentials)"
-
-        $joinParams = @{
-            DomainName = $DomainName
-            Credential = (Get-Credential -Message "Enter domain admin credentials for $DomainName")
-            Force = $true
-            Restart = $false
-        }
-
-        if ($OUPath) {
-            $joinParams.OUPath = $OUPath
-        }
-
-        try {
-            Add-Computer @joinParams
-            Write-Success "Domain join successful!"
-        } catch {
-            throw "Domain join failed: $_"
-        }
-    }
+    Write-Step "7/9" "Skipping domain join (--SkipDomainJoin)"
 }
 
 # ============================================
-# Step 6: Certificate Enrollment
+# Step 8: Certificate Enrollment
 # ============================================
-Write-Step "Step 6: Machine Certificate Enrollment"
+if (-not $SkipCertEnrollment) {
+    Write-Step "8/9" "Requesting machine certificate via AD CS"
 
-if ($PSCmdlet.ShouldProcess("AD CS", "Request machine certificate")) {
-    Write-Host "Requesting machine certificate using template: $CertTemplateName"
+    if ($PSCmdlet.ShouldProcess("Machine Certificate", "Request enrollment")) {
+        # Force GPO refresh to trigger auto-enrollment
+        Write-Info "Forcing Group Policy update..."
+        gpupdate /force /target:computer 2>&1 | Out-Null
+        Start-Sleep -Seconds 10
 
-    # Use certreq for enrollment
-    $infContent = @"
-[NewRequest]
-Subject = "CN=$env:COMPUTERNAME.$DomainName"
-KeySpec = 1
-KeyLength = 2048
-Exportable = TRUE
-MachineKeySet = TRUE
-SMIME = FALSE
-PrivateKeyArchive = FALSE
-UserProtected = FALSE
-UseExistingKeySet = FALSE
-ProviderName = "Microsoft RSA SChannel Cryptographic Provider"
-ProviderType = 12
-RequestType = PKCS10
-KeyUsage = 0xa0
-
-[RequestAttributes]
-CertificateTemplate = $CertTemplateName
-"@
-
-    $infPath = "$env:TEMP\certreq.inf"
-    $reqPath = "$env:TEMP\certreq.req"
-    $cerPath = "$env:TEMP\certreq.cer"
-
-    try {
-        Set-Content -Path $infPath -Value $infContent
-
-        # Generate request
-        $result = certreq -new -machine $infPath $reqPath 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "certreq -new failed: $result"
-        }
-
-        # Submit to CA (assumes auto-enrollment CA discovery)
-        $result = certreq -submit -machine $reqPath $cerPath 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "certreq -submit failed: $result"
-        }
-
-        # Accept certificate
-        $result = certreq -accept -machine $cerPath 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "certreq -accept failed: $result"
-        }
-
-        Write-Success "Certificate enrolled successfully"
-
-        # Get thumbprint
-        $cert = Get-ChildItem Cert:\LocalMachine\My |
-            Where-Object { $_.Subject -match $env:COMPUTERNAME } |
-            Sort-Object NotAfter -Descending |
-            Select-Object -First 1
-
+        # Check for certificate
+        $cert = Find-MachineCertificate
         if ($cert) {
-            Write-Host "  Certificate Thumbprint: $($cert.Thumbprint)"
-            Write-Host "  Valid Until: $($cert.NotAfter)"
+            Write-Success "Machine certificate found:"
+            Write-Info "  Subject: $($cert.Subject)"
+            Write-Info "  Issuer: $($cert.Issuer)"
+            Write-Info "  Expires: $($cert.NotAfter)"
+            Write-Info "  Thumbprint: $($cert.Thumbprint)"
 
-            # Save thumbprint for config update
-            $certThumbprint = $cert.Thumbprint
+            # Check SAN
+            $san = $cert.DnsNameList | ForEach-Object { $_.Unicode }
+            Write-Info "  SAN DNS Names: $($san -join ', ')"
+        } else {
+            Write-Warning "Machine certificate not found"
+            Write-Info "Certificate enrollment may take additional time."
+            Write-Info "Manual enrollment: certreq.exe -enroll -machine 'Machine'"
+
+            # Try manual enrollment
+            Write-Info "Attempting manual enrollment..."
+            $enrollResult = certreq.exe -enroll -machine "Machine" 2>&1
+            Start-Sleep -Seconds 5
+
+            $cert = Find-MachineCertificate
+            if ($cert) {
+                Write-Success "Certificate enrolled successfully"
+            } else {
+                Write-Warning "Certificate still not available. Continue with Phase 2 anyway."
+            }
         }
-    } finally {
-        # Cleanup temp files
-        Remove-Item $infPath, $reqPath, $cerPath -ErrorAction SilentlyContinue
     }
-}
-
-# ============================================
-# Step 7: Update NetBird Config for mTLS
-# ============================================
-Write-Step "Step 7: Updating NetBird Config for mTLS (Phase 2)"
-
-if ($PSCmdlet.ShouldProcess($NetBirdConfigPath, "Enable mTLS")) {
-    if ($certThumbprint) {
-        # Update config to enable machine cert auth
-        $configUpdate = @"
-
-# Machine Certificate Authentication (Phase 2)
-machine_cert_enabled: true
-machine_cert_thumbprint: $certThumbprint
-"@
-        Add-Content $NetBirdConfigPath $configUpdate
-
-        # Remove setup key from config (security)
-        $config = Get-Content $NetBirdConfigPath -Raw
-        $config = $config -replace 'setup_key:.*\n', ''
-        Set-Content $NetBirdConfigPath $config
-
-        Write-Success "Config updated for mTLS authentication"
-    } else {
-        Write-Warning "No certificate thumbprint available. Skipping mTLS config."
-    }
-}
-
-# ============================================
-# Step 8: Restart or Prompt
-# ============================================
-Write-Step "Step 8: Completing Bootstrap"
-
-if ($NoRestart) {
-    Write-Host @"
-
-Bootstrap complete! Manual steps required:
-1. Restart the computer to complete domain join
-2. After restart, the NetBird service will use mTLS (Phase 2)
-
-"@ -ForegroundColor Yellow
 } else {
-    Write-Host @"
+    Write-Step "8/9" "Skipping certificate enrollment (--SkipCertEnrollment)"
+}
 
-Bootstrap complete!
+# ============================================
+# Step 9: Update Config for mTLS (Phase 2)
+# ============================================
+Write-Step "9/9" "Updating config for mTLS (Smart Cert Selection)"
 
-The computer will restart in 30 seconds to complete:
-- Domain join finalization
-- NetBird service restart with mTLS (Phase 2)
+$phase2Config = @"
+# NetBird Machine Tunnel - Phase 2 (mTLS Authentication)
+# Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+# Bootstrap completed - now using machine certificate for authentication
 
-Press Ctrl+C to cancel restart.
+management_url: "$ManagementURL"
+tunnel_mode: "machine"
 
+# v3.6: Smart Cert Selection
+# The client will automatically find and use the correct machine certificate
+# based on: Client Auth EKU, SAN DNS Name, validity period
+machine_cert_enabled: true
+machine_cert_san_must_match: true
+
+# Certificate selection criteria (Smart Selection):
+# 1. Must have Client Authentication EKU (1.3.6.1.5.5.7.3.2)
+# 2. Must have SAN DNS Name matching hostname.domain
+# 3. Must be valid (not expired, not before)
+# 4. Prefers certificate with latest expiry
+
+# IMPORTANT: Setup-Key has been REMOVED
+# ===> REVOKE the setup-key in NetBird Dashboard! <===
+"@
+
+if ($PSCmdlet.ShouldProcess($ConfigPath, "Write Phase 2 config")) {
+    $phase2Config | Out-File $ConfigPath -Encoding UTF8 -Force
+    Write-Success "Config updated for mTLS"
+
+    # Restart service to use new config
+    Write-Info "Restarting service with mTLS authentication..."
+    Restart-Service $ServiceName
+    Start-Sleep -Seconds 5
+
+    $service = Get-Service -Name $ServiceName
+    if ($service.Status -eq 'Running') {
+        Write-Success "Service restarted with mTLS"
+    } else {
+        Write-Warning "Service status: $($service.Status)"
+    }
+}
+
+# ============================================
+# Summary
+# ============================================
+Write-Host @"
+
++=====================================================================+
+|                    Bootstrap Complete                               |
++=====================================================================+
+
+Phase 1 (Setup-Key): COMPLETE
+Phase 2 (mTLS):      $(if ($cert) { "COMPLETE" } else { "PENDING (certificate enrollment)" })
+
+IMPORTANT NEXT STEPS:
 "@ -ForegroundColor Green
 
-    if ($PSCmdlet.ShouldProcess("Computer", "Restart")) {
-        Start-Sleep -Seconds 30
-        Restart-Computer -Force
-    }
-}
+Write-Host @"
+1. REVOKE the setup-key in NetBird Dashboard!
+   Setup-Key: $SetupKeyRedacted
+   This is critical for security.
+
+2. If domain was joined, REBOOT the machine:
+
+   Restart-Computer -Force
+
+3. Verify mTLS authentication:
+   - Check service logs for 'RegisterMachinePeer...success'
+   - Dashboard should show machine peer with certificate info
+
+4. If certificate is pending:
+   - Run: gpupdate /force
+   - Or: certreq.exe -enroll -machine "Machine"
+   - Then: Restart-Service $ServiceName
+
+"@ -ForegroundColor Yellow
+
+Write-Host "Log file: $LogPath" -ForegroundColor Gray
+
+# Add final log entry
+Add-Content -Path $LogPath -Value ""
+Add-Content -Path $LogPath -Value "=== Bootstrap Completed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ==="
 
 #endregion
