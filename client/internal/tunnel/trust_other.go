@@ -99,7 +99,7 @@ func verifyPin(cert *x509.Certificate, primaryPin, backupPin string) error {
 	}
 
 	expectedPin := extractPinHash(primaryPin)
-	return fmt.Errorf("%w: expected %s..., got %s...",
+	return fmt.Errorf("%w: expected [%s] but got [%s]",
 		ErrCertPinMismatch,
 		truncateHash(expectedPin, 16),
 		truncateHash(certHashB64, 16))
