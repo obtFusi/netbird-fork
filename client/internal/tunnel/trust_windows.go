@@ -45,7 +45,7 @@ var ErrInvalidPinFormat = errors.New("invalid pin format (expected sha256//BASE6
 var ErrNoCertPresented = errors.New("no server certificate presented")
 
 // ErrCACertNotFound indicates the CA certificate file was not found.
-var ErrCACertNotFound = errors.New("CA certificate file not found")
+var ErrCACertNotFound = errors.New("ca certificate file not found")
 
 // VerifyServerCert returns a TLS verification callback that validates the server
 // certificate against configured pins or installed CA certificates.
@@ -348,7 +348,7 @@ func TrustBootstrap(cfg *TrustConfig) error {
 		}
 
 		if !installed {
-			return errors.New("CA certificate installation verification failed")
+			return errors.New("ca certificate installation verification failed")
 		}
 
 		log.Info("CA certificate installation verified")

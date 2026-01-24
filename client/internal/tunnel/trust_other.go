@@ -42,7 +42,7 @@ var ErrInvalidPinFormat = errors.New("invalid pin format (expected sha256//BASE6
 var ErrNoCertPresented = errors.New("no server certificate presented")
 
 // ErrCACertNotFound indicates the CA certificate file was not found.
-var ErrCACertNotFound = errors.New("CA certificate file not found")
+var ErrCACertNotFound = errors.New("ca certificate file not found")
 
 // ErrNotSupported indicates the operation is not supported on this platform.
 var ErrNotSupported = errors.New("operation not supported on this platform")
