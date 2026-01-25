@@ -75,7 +75,7 @@ func installService(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	// Check if service already exists
 	s, err := m.OpenService(ServiceName)
@@ -145,7 +145,7 @@ func uninstallService(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	// Open the service
 	s, err := m.OpenService(ServiceName)
@@ -196,7 +196,7 @@ func startService(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	// Open the service
 	s, err := m.OpenService(ServiceName)
@@ -222,7 +222,7 @@ func stopService(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	// Open the service
 	s, err := m.OpenService(ServiceName)
@@ -260,7 +260,7 @@ func serviceStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	// Open the service
 	s, err := m.OpenService(ServiceName)

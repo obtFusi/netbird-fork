@@ -89,16 +89,16 @@ func runAsService() error {
 	}
 	defer elog.Close()
 
-	elog.Info(1, fmt.Sprintf("Starting %s service", ServiceName))
+	_ = elog.Info(1, fmt.Sprintf("Starting %s service", ServiceName))
 
 	handler := &serviceHandler{}
 	err = svc.Run(ServiceName, handler)
 	if err != nil {
-		elog.Error(1, fmt.Sprintf("Service failed: %v", err))
+		_ = elog.Error(1, fmt.Sprintf("Service failed: %v", err))
 		return fmt.Errorf("service run: %w", err)
 	}
 
-	elog.Info(1, fmt.Sprintf("%s service stopped", ServiceName))
+	_ = elog.Info(1, fmt.Sprintf("%s service stopped", ServiceName))
 	return nil
 }
 

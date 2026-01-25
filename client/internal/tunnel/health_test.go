@@ -296,7 +296,7 @@ func TestHealthCheckerOnUnhealthyCallback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	hc.Start(ctx)
+	_ = hc.Start(ctx)
 
 	// Wait for consecutive failures
 	time.Sleep(200 * time.Millisecond)

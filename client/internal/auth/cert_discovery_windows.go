@@ -229,7 +229,7 @@ func findCertByThumbprintFromStoreImpl(thumbprint string) (*LoadedCertificate, e
 	if certCtx == 0 {
 		return nil, fmt.Errorf("certificate not found with thumbprint %s", thumbprint)
 	}
-	defer procCertFreeCertificateContext.Call(certCtx)
+	defer func() { _, _, _ = procCertFreeCertificateContext.Call(certCtx) }()
 
 	// Parse the certificate
 	ctx := (*CERT_CONTEXT)(unsafe.Pointer(certCtx))
@@ -291,7 +291,7 @@ func openCertStore(storeName string) (syscall.Handle, error) {
 
 // closeCertStore closes a certificate store
 func closeCertStore(store syscall.Handle) {
-	procCertCloseStore.Call(uintptr(store), 0)
+	_, _, _ = procCertCloseStore.Call(uintptr(store), 0)
 }
 
 // enumCertificates enumerates certificates in a store
@@ -310,7 +310,7 @@ func enumCertificates(store syscall.Handle, callback func(*CERT_CONTEXT) bool) e
 
 		ctx := (*CERT_CONTEXT)(unsafe.Pointer(certCtx))
 		if !callback(ctx) {
-			procCertFreeCertificateContext.Call(certCtx)
+			_, _, _ = procCertFreeCertificateContext.Call(certCtx)
 			break
 		}
 
@@ -417,7 +417,7 @@ func acquirePrivateKey(ctx *CERT_CONTEXT) (crypto.Signer, error) {
 	cert, err := parseCertContext(ctx)
 	if err != nil {
 		if freeKey != 0 {
-			procNCryptFreeObject.Call(keyHandle)
+			_, _, _ = procNCryptFreeObject.Call(keyHandle)
 		}
 		return nil, err
 	}

@@ -487,7 +487,7 @@ func (m *Manager) ConfigureWithDenyDefault() error {
 	if err := m.EnableDenyDefault(); err != nil {
 		// If deny-all fails, cleanup allow rules
 		log.WithError(err).Warn("Failed to enable deny-default, cleaning up")
-		m.RemoveAllRules()
+		_ = m.RemoveAllRules()
 		return fmt.Errorf("enable deny-default: %w", err)
 	}
 
@@ -495,7 +495,7 @@ func (m *Manager) ConfigureWithDenyDefault() error {
 	if m.safeModeEnabled && m.connectivityTestFunc != nil {
 		if err := m.connectivityTestFunc(); err != nil {
 			log.WithError(err).Warn("Connectivity test failed, rolling back firewall rules")
-			m.Cleanup()
+			_ = m.Cleanup()
 			return fmt.Errorf("connectivity test failed after firewall rules: %w", err)
 		}
 
