@@ -468,7 +468,7 @@ func SaveTestCerts(outputDir string) error {
 		keyPath := filepath.Join(outputDir, name+".key")
 
 		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.cert.Raw})
-		if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+		if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
 			return fmt.Errorf("write %s: %w", certPath, err)
 		}
 
