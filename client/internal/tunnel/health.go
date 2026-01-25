@@ -230,14 +230,15 @@ func (h *HealthChecker) Check(ctx context.Context) HealthCheckResult {
 	if interfaceChecker != nil {
 		up, err := interfaceChecker()
 		result.InterfaceUp = up
-		if err != nil {
+		switch {
+		case err != nil:
 			result.CheckDetails["interface"] = fmt.Sprintf("error: %v", err)
 			result.Status = HealthStatusUnhealthy
 			result.LastError = err
-		} else if !up {
+		case !up:
 			result.CheckDetails["interface"] = "down"
 			result.Status = HealthStatusUnhealthy
-		} else {
+		default:
 			result.CheckDetails["interface"] = "up"
 		}
 	} else {

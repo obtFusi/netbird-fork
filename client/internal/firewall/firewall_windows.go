@@ -15,7 +15,7 @@ import (
 )
 
 // addFirewallRuleImpl adds a firewall rule using netsh
-func addFirewallRuleImpl(rule FirewallRule) error {
+func addFirewallRuleImpl(rule Rule) error {
 	args := []string{
 		"advfirewall", "firewall", "add", "rule",
 		fmt.Sprintf("name=%s", rule.Name),
@@ -186,7 +186,7 @@ func getSystem32Command(command string) string {
 // AddDenyAllRule adds a deny-all rule for the interface
 // This should be called after all allow rules to create a deny-by-default policy
 func AddDenyAllRule(interfaceName string) error {
-	rule := FirewallRule{
+	rule := Rule{
 		Name:           RuleNamePrefix + "Deny All",
 		Description:    "NetBird Machine Tunnel - Block all other traffic",
 		Group:          RuleGroupName,

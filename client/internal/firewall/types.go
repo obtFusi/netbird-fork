@@ -36,8 +36,8 @@ const (
 	ActionBlock Action = "block"
 )
 
-// FirewallRule represents a Windows Firewall rule
-type FirewallRule struct {
+// Rule represents a Windows Firewall rule
+type Rule struct {
 	// Name is the rule name for display and identification
 	Name string
 

@@ -24,7 +24,7 @@ func TestNewResyncer(t *testing.T) {
 	resyncer := NewResyncer(manager, DefaultResyncConfig())
 
 	if resyncer == nil {
-		t.Error("NewResyncer returned nil")
+		t.Fatal("NewResyncer returned nil")
 	}
 
 	if resyncer.manager != manager {

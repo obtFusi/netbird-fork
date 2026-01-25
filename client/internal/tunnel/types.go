@@ -2,16 +2,16 @@
 // Machine Tunnel runs as SYSTEM service and authenticates via machine certificates.
 package tunnel
 
-// TunnelMode defines the operating mode of the NetBird client
-type TunnelMode string
+// Mode defines the operating mode of the NetBird client
+type Mode string
 
 const (
 	// TunnelModeUser is the default mode - user authentication after login via SSO/Setup-Key
-	TunnelModeUser TunnelMode = "user"
+	ModeUser Mode = "user"
 
 	// TunnelModeMachine is the new mode for Windows pre-login VPN
 	// Uses machine certificate from Windows Certificate Store for authentication
-	TunnelModeMachine TunnelMode = "machine"
+	ModeMachine Mode = "machine"
 )
 
 // MachineCertConfig holds configuration for machine certificate authentication

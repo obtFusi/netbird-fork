@@ -12,11 +12,6 @@ func updateRuleInterface(ruleName, newInterfaceName string) error {
 	return fmt.Errorf("firewall rule update not implemented on this platform")
 }
 
-// verifyRuleInterface is not implemented on non-Windows platforms
-func verifyRuleInterface(ruleName, expectedInterface string) (bool, error) {
-	return false, fmt.Errorf("firewall rule verification not implemented on this platform")
-}
-
 // GetRulesWithWrongInterface is not implemented on non-Windows platforms
 func GetRulesWithWrongInterface(expectedInterface string) ([]string, error) {
 	return nil, fmt.Errorf("firewall rule query not implemented on this platform")

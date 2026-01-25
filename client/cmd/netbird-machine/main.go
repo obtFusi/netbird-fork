@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/netbirdio/netbird/util"
@@ -50,8 +51,8 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("NetBird Machine Tunnel %s\n", Version)
-		fmt.Printf("  OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		log.Infof("NetBird Machine Tunnel %s", Version)
+		log.Infof("  OS/Arch: %s/%s", runtime.GOOS, runtime.GOARCH)
 	},
 }
 

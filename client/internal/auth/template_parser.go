@@ -8,8 +8,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 )
+
+// ErrNoTemplateInfo is returned when no template info is found in a certificate
+var ErrNoTemplateInfo = errors.New("no template info found in certificate")
 
 // TemplateInfo contains AD CS certificate template information
 type TemplateInfo struct {
@@ -75,9 +79,9 @@ func parseTemplateInfo(cert *x509.Certificate) (*TemplateInfo, error) {
 		}
 	}
 
-	// If no template info found, return nil (not an error)
+	// If no template info found, return sentinel error
 	if info.OID == "" && info.Name == "" {
-		return nil, nil
+		return nil, ErrNoTemplateInfo
 	}
 
 	return info, nil

@@ -324,7 +324,7 @@ func TestHealthCheckerGetLastResult(t *testing.T) {
 	// Now should have a result
 	result := hc.GetLastResult()
 	if result == nil {
-		t.Error("GetLastResult() should return result after check")
+		t.Fatal("GetLastResult() should return result after check")
 	}
 
 	if result.Status != HealthStatusHealthy {

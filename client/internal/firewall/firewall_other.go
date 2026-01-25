@@ -8,41 +8,26 @@ package firewall
 import "fmt"
 
 // addFirewallRuleImpl is not supported on non-Windows platforms
-func addFirewallRuleImpl(rule FirewallRule) error {
-	return fmt.Errorf("Windows Firewall is only available on Windows")
+func addFirewallRuleImpl(rule Rule) error {
+	return fmt.Errorf("windows firewall is only available on windows")
 }
 
 // removeFirewallRuleImpl is not supported on non-Windows platforms
 func removeFirewallRuleImpl(ruleName string) error {
-	return fmt.Errorf("Windows Firewall is only available on Windows")
+	return fmt.Errorf("windows firewall is only available on windows")
 }
 
 // removeFirewallRulesByGroupImpl is not supported on non-Windows platforms
 func removeFirewallRulesByGroupImpl(groupName string) error {
-	return fmt.Errorf("Windows Firewall is only available on Windows")
-}
-
-// isFirewallRuleExists is not supported on non-Windows platforms
-func isFirewallRuleExists(ruleName string) bool {
-	return false
-}
-
-// isWindowsFirewallReachable is not supported on non-Windows platforms
-func isWindowsFirewallReachable() bool {
-	return false
-}
-
-// listFirewallRulesByPrefix is not supported on non-Windows platforms
-func listFirewallRulesByPrefix(prefix string) ([]string, error) {
-	return nil, fmt.Errorf("Windows Firewall is only available on Windows")
+	return fmt.Errorf("windows firewall is only available on windows")
 }
 
 // AddDenyAllRule is not supported on non-Windows platforms
 func AddDenyAllRule(interfaceName string) error {
-	return fmt.Errorf("Windows Firewall is only available on Windows")
+	return fmt.Errorf("windows firewall is only available on windows")
 }
 
 // RemoveDenyAllRule is not supported on non-Windows platforms
 func RemoveDenyAllRule() error {
-	return fmt.Errorf("Windows Firewall is only available on Windows")
+	return fmt.Errorf("windows firewall is only available on windows")
 }

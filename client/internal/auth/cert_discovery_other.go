@@ -11,10 +11,10 @@ import (
 
 // discoverFromWindowsStoreImpl returns an error on non-Windows platforms
 func discoverFromWindowsStoreImpl(config *CertDiscoveryConfig) (*LoadedCertificate, error) {
-	return nil, fmt.Errorf("Windows Certificate Store is only available on Windows")
+	return nil, fmt.Errorf("windows certificate store is only available on windows")
 }
 
 // findCertByThumbprintFromStoreImpl returns an error on non-Windows platforms
 func findCertByThumbprintFromStoreImpl(thumbprint string) (*LoadedCertificate, error) {
-	return nil, fmt.Errorf("Windows Certificate Store is only available on Windows")
+	return nil, fmt.Errorf("windows certificate store is only available on windows")
 }

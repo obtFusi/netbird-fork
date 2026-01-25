@@ -26,7 +26,7 @@ type CertSelectionCriteria struct {
 
 // FindMachineCertificate returns an error on non-Windows platforms
 func FindMachineCertificate(criteria CertSelectionCriteria) (*WinCertSigner, error) {
-	return nil, fmt.Errorf("Windows Certificate Store is only available on Windows")
+	return nil, fmt.Errorf("windows certificate store is only available on windows")
 }
 
 // ParseMachineIdentity extracts machine identity from a certificate's SAN DNSName

@@ -87,7 +87,7 @@ func TestDiscoveryGetCurrentInterface(t *testing.T) {
 
 	info := d.GetCurrentInterface()
 	if info == nil {
-		t.Error("GetCurrentInterface() should return interface after setting")
+		t.Fatal("GetCurrentInterface() should return interface after setting")
 	}
 
 	// Verify it's a copy

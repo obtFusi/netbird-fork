@@ -179,8 +179,8 @@ func (m *Manager) Configure() error {
 }
 
 // buildADRules builds all AD service firewall rules
-func (m *Manager) buildADRules(dcAddressFilter string) []FirewallRule {
-	rules := []FirewallRule{}
+func (m *Manager) buildADRules(dcAddressFilter string) []Rule {
+	rules := []Rule{}
 
 	// DNS (UDP + TCP)
 	rules = append(rules,
@@ -243,8 +243,8 @@ func (m *Manager) buildADRules(dcAddressFilter string) []FirewallRule {
 }
 
 // buildRule creates a single firewall rule
-func (m *Manager) buildRule(name string, protocol Protocol, remotePorts, remoteAddresses string) FirewallRule {
-	return FirewallRule{
+func (m *Manager) buildRule(name string, protocol Protocol, remotePorts, remoteAddresses string) Rule {
+	return Rule{
 		Name:            RuleNamePrefix + name,
 		Description:     fmt.Sprintf("NetBird Machine Tunnel - %s", name),
 		Group:           RuleGroupName,
@@ -260,7 +260,7 @@ func (m *Manager) buildRule(name string, protocol Protocol, remotePorts, remoteA
 }
 
 // addRule adds a single firewall rule (platform-specific)
-func (m *Manager) addRule(rule FirewallRule) error {
+func (m *Manager) addRule(rule Rule) error {
 	return addFirewallRuleImpl(rule)
 }
 
