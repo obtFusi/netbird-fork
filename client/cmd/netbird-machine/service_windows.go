@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
+	"gopkg.in/yaml.v3"
 
 	"github.com/netbirdio/netbird/client/internal/tunnel"
 )
@@ -249,22 +251,146 @@ func (h *serviceHandler) stopMachineTunnel() {
 	}
 }
 
-// loadConfig loads the machine tunnel configuration
+// configYAML represents the YAML configuration file structure
+type configYAML struct {
+	// Management server configuration
+	ManagementURL string `yaml:"management_url"`
+
+	// Authentication
+	SetupKey           string `yaml:"setup_key,omitempty"`
+	MachineCertEnabled bool   `yaml:"machine_cert_enabled"`
+	MachineCertThumbprint string `yaml:"machine_cert_thumbprint,omitempty"`
+
+	// mTLS port (default: 33074)
+	MTLSPort int `yaml:"mtls_port,omitempty"`
+
+	// Machine certificate discovery settings
+	MachineCert struct {
+		TemplateOID  string `yaml:"template_oid,omitempty"`
+		TemplateName string `yaml:"template_name,omitempty"`
+		RequiredEKU  string `yaml:"required_eku,omitempty"`
+		SANMustMatch bool   `yaml:"san_must_match,omitempty"`
+	} `yaml:"machine_cert,omitempty"`
+
+	// Interface configuration
+	InterfaceName string `yaml:"interface_name,omitempty"`
+
+	// Reconnection settings
+	ReconnectInterval    string `yaml:"reconnect_interval,omitempty"`
+	MaxReconnectInterval string `yaml:"max_reconnect_interval,omitempty"`
+
+	// Health check settings
+	HealthCheckInterval string `yaml:"health_check_interval,omitempty"`
+
+	// DNS servers for NRPT rules (DC IPs)
+	DNSServers []string `yaml:"dns_servers,omitempty"`
+
+	// DNS namespaces for NRPT rules (AD domains)
+	DNSNamespaces []string `yaml:"dns_namespaces,omitempty"`
+
+	// Allowed DC IPs for firewall rules
+	AllowedDCIPs []string `yaml:"allowed_dc_ips,omitempty"`
+
+	// DC network CIDRs for routing
+	DCRoutes []string `yaml:"dc_routes,omitempty"`
+}
+
+// loadConfig loads the machine tunnel configuration from YAML file
 func loadConfig() (*tunnel.MachineTunnelConfig, error) {
-	// TODO: Load from configPath in T-4.x (YAML file parsing)
-	// For now, return default config with placeholder ManagementURL
+	// Start with defaults
 	config := tunnel.DefaultConfig()
 	if config == nil {
 		return nil, fmt.Errorf("failed to get default config")
 	}
 
-	// ManagementURL will be loaded from config file in production
-	// For now, use a placeholder that will be overwritten from config
-	if config.ManagementURL == "" {
-		// This will be set from config file in T-4.x
-		// For service startup testing, we allow empty URL but tunnel will fail to connect
-		config.ManagementURL = "https://management.netbird.io:33074"
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("config file not found: %s", configPath)
 	}
+
+	// Read config file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config file: %w", err)
+	}
+
+	// Parse YAML
+	var yamlConfig configYAML
+	if err := yaml.Unmarshal(data, &yamlConfig); err != nil {
+		return nil, fmt.Errorf("parse config file: %w", err)
+	}
+
+	// Validate required fields
+	if yamlConfig.ManagementURL == "" {
+		return nil, fmt.Errorf("management_url is required in config file")
+	}
+
+	// Map YAML to config struct
+	config.ManagementURL = yamlConfig.ManagementURL
+	config.SetupKey = yamlConfig.SetupKey
+	config.MachineCertEnabled = yamlConfig.MachineCertEnabled
+	config.MachineCertThumbprint = yamlConfig.MachineCertThumbprint
+
+	if yamlConfig.MTLSPort > 0 {
+		config.MTLSPort = yamlConfig.MTLSPort
+	}
+
+	if yamlConfig.InterfaceName != "" {
+		config.InterfaceName = yamlConfig.InterfaceName
+	}
+
+	// Parse duration strings
+	if yamlConfig.ReconnectInterval != "" {
+		if d, err := time.ParseDuration(yamlConfig.ReconnectInterval); err == nil {
+			config.ReconnectInterval = d
+		} else {
+			log.Warnf("Invalid reconnect_interval '%s', using default", yamlConfig.ReconnectInterval)
+		}
+	}
+
+	if yamlConfig.MaxReconnectInterval != "" {
+		if d, err := time.ParseDuration(yamlConfig.MaxReconnectInterval); err == nil {
+			config.MaxReconnectInterval = d
+		} else {
+			log.Warnf("Invalid max_reconnect_interval '%s', using default", yamlConfig.MaxReconnectInterval)
+		}
+	}
+
+	if yamlConfig.HealthCheckInterval != "" {
+		if d, err := time.ParseDuration(yamlConfig.HealthCheckInterval); err == nil {
+			config.HealthCheckInterval = d
+		} else {
+			log.Warnf("Invalid health_check_interval '%s', using default", yamlConfig.HealthCheckInterval)
+		}
+	}
+
+	// Machine cert config
+	if yamlConfig.MachineCert.TemplateOID != "" {
+		config.MachineCert.TemplateOID = yamlConfig.MachineCert.TemplateOID
+	}
+	if yamlConfig.MachineCert.TemplateName != "" {
+		config.MachineCert.TemplateName = yamlConfig.MachineCert.TemplateName
+	}
+	if yamlConfig.MachineCert.RequiredEKU != "" {
+		config.MachineCert.RequiredEKU = yamlConfig.MachineCert.RequiredEKU
+	}
+	// SANMustMatch defaults to true in DefaultConfig()
+	if !yamlConfig.MachineCert.SANMustMatch {
+		config.MachineCert.SANMustMatch = yamlConfig.MachineCert.SANMustMatch
+	}
+
+	// DNS and network configuration
+	config.DNSServers = yamlConfig.DNSServers
+	config.DNSNamespaces = yamlConfig.DNSNamespaces
+	config.AllowedDCIPs = yamlConfig.AllowedDCIPs
+	config.DCRoutes = yamlConfig.DCRoutes
+
+	log.WithFields(log.Fields{
+		"config_path":        configPath,
+		"management_url":     config.ManagementURL,
+		"machine_cert_enabled": config.MachineCertEnabled,
+		"interface_name":     config.InterfaceName,
+	}).Info("Configuration loaded")
 
 	return config, nil
 }
