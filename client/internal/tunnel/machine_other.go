@@ -35,7 +35,7 @@ type MachineTunnelConfig struct {
 
 // NewMachineTunnel returns an error on non-Windows platforms
 func NewMachineTunnel(config *MachineTunnelConfig) (*MachineTunnel, error) {
-	return nil, fmt.Errorf("Machine Tunnel is only supported on Windows")
+	return nil, fmt.Errorf("machine tunnel is only supported on windows")
 }
 
 // DefaultConfig returns nil on non-Windows platforms
@@ -45,7 +45,7 @@ func DefaultConfig() *MachineTunnelConfig {
 
 // Start returns an error on non-Windows platforms
 func (t *MachineTunnel) Start(ctx context.Context) error {
-	return fmt.Errorf("Machine Tunnel is only supported on Windows")
+	return fmt.Errorf("machine tunnel is only supported on windows")
 }
 
 // Stop is a no-op on non-Windows platforms
