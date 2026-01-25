@@ -133,9 +133,8 @@ func installService(cmd *cobra.Command, args []string) error {
 		log.Warnf("Failed to install event log source: %v", err)
 	}
 
-	log.Infof("Service %s installed successfully", ServiceName)
-	fmt.Printf("Service '%s' installed successfully.\n", ServiceName)
-	fmt.Println("Use 'netbird-machine start' to start the service.")
+	log.Infof("Service '%s' installed successfully", ServiceName)
+	log.Info("Use 'netbird-machine start' to start the service.")
 	return nil
 }
 
@@ -185,8 +184,7 @@ func uninstallService(cmd *cobra.Command, args []string) error {
 		log.Warnf("Failed to remove event log source: %v", err)
 	}
 
-	log.Infof("Service %s uninstalled successfully", ServiceName)
-	fmt.Printf("Service '%s' uninstalled successfully.\n", ServiceName)
+	log.Infof("Service '%s' uninstalled successfully", ServiceName)
 	return nil
 }
 
@@ -211,8 +209,7 @@ func startService(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("start service: %w", err)
 	}
 
-	log.Infof("Service %s started", ServiceName)
-	fmt.Printf("Service '%s' started.\n", ServiceName)
+	log.Infof("Service '%s' started", ServiceName)
 	return nil
 }
 
@@ -249,8 +246,7 @@ func stopService(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	log.Infof("Service %s stopped", ServiceName)
-	fmt.Printf("Service '%s' stopped.\n", ServiceName)
+	log.Infof("Service '%s' stopped", ServiceName)
 	return nil
 }
 
@@ -265,7 +261,7 @@ func serviceStatus(cmd *cobra.Command, args []string) error {
 	// Open the service
 	s, err := m.OpenService(ServiceName)
 	if err != nil {
-		fmt.Printf("Service '%s' is not installed.\n", ServiceName)
+		log.Infof("Service '%s' is not installed", ServiceName)
 		return nil
 	}
 	defer s.Close()
@@ -297,8 +293,8 @@ func serviceStatus(cmd *cobra.Command, args []string) error {
 		stateStr = fmt.Sprintf("Unknown (%d)", status.State)
 	}
 
-	fmt.Printf("Service: %s\n", ServiceName)
-	fmt.Printf("Status:  %s\n", stateStr)
-	fmt.Printf("PID:     %d\n", status.ProcessId)
+	log.Infof("Service: %s", ServiceName)
+	log.Infof("Status:  %s", stateStr)
+	log.Infof("PID:     %d", status.ProcessId)
 	return nil
 }

@@ -75,7 +75,7 @@ func (m *FirewallManager) addRule(ruleName, direction, remoteIP string) error {
 		fmt.Sprintf("remoteip=%s", remoteIP),
 		"localip=any",
 		"protocol=any",
-		fmt.Sprintf("interfacetype=any"),
+		"interfacetype=any",
 		fmt.Sprintf("group=%s", FirewallGroupName),
 	}
 

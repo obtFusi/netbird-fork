@@ -67,12 +67,12 @@ func init() {
 
 func runService(cmd *cobra.Command, args []string) error {
 	// Check if we're running interactively or as a service
-	isInteractive, err := svc.IsAnInteractiveSession()
+	isService, err := svc.IsWindowsService()
 	if err != nil {
-		return fmt.Errorf("check interactive session: %w", err)
+		return fmt.Errorf("check windows service: %w", err)
 	}
 
-	if isInteractive || debugMode {
+	if !isService || debugMode {
 		// Running interactively (for debugging)
 		return runInteractive()
 	}

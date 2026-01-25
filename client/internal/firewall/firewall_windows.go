@@ -28,12 +28,8 @@ func addFirewallRuleImpl(rule Rule) error {
 		"enable=yes",
 	}
 
-	// Add interface filter if specified
-	if rule.InterfaceAlias != "" {
-		// Note: netsh uses "localip" for interface binding in some contexts
-		// For interface-specific rules, we use the interface alias via PowerShell
-		// as netsh has limited interface filtering support
-	}
+	// Note: Interface-specific rules are applied via PowerShell commands
+	// in AddDenyAllRule as netsh has limited interface filtering support
 
 	// Add description if specified
 	if rule.Description != "" {
@@ -108,68 +104,6 @@ func removeFirewallRulesByGroupImpl(groupName string) error {
 
 	log.WithField("group", groupName).Debug("Removed firewall rules by group via PowerShell")
 	return nil
-}
-
-// isFirewallRuleExists checks if a firewall rule exists
-func isFirewallRuleExists(ruleName string) bool {
-	args := []string{
-		"advfirewall", "firewall", "show", "rule",
-		fmt.Sprintf("name=%s", ruleName),
-	}
-
-	netshCmd := getSystem32Command("netsh")
-	cmd := exec.Command(netshCmd, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
-	_, err := cmd.Output()
-	return err == nil
-}
-
-// isWindowsFirewallReachable checks if Windows Firewall service is available
-func isWindowsFirewallReachable() bool {
-	args := []string{"advfirewall", "show", "allprofiles", "state"}
-
-	netshCmd := getSystem32Command("netsh")
-	cmd := exec.Command(netshCmd, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
-	_, err := cmd.Output()
-	if err != nil {
-		log.WithError(err).Debug("Windows Firewall is not reachable")
-		return false
-	}
-
-	return true
-}
-
-// listFirewallRulesByPrefix lists all firewall rules with a given name prefix
-func listFirewallRulesByPrefix(prefix string) ([]string, error) {
-	// Use PowerShell to get rules with the prefix
-	psScript := fmt.Sprintf(`Get-NetFirewallRule -DisplayName '%s*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty DisplayName`, prefix)
-
-	psCmd := getSystem32Command("powershell")
-	cmd := exec.Command(psCmd, "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		outputStr := string(output)
-		if strings.Contains(outputStr, "ObjectNotFound") ||
-			strings.Contains(outputStr, "No MSFT_NetFirewallRule objects found") {
-			return nil, nil // No rules found is not an error
-		}
-		return nil, fmt.Errorf("PowerShell list rules failed: %w (output: %s)", err, outputStr)
-	}
-
-	var rules []string
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			rules = append(rules, line)
-		}
-	}
-
-	return rules, nil
 }
 
 // getSystem32Command returns the full path to a System32 command

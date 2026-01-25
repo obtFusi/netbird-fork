@@ -55,7 +55,7 @@ type CRYPT_HASH_BLOB struct {
 }
 
 type CERT_INFO struct {
-	dwVersion            uint32
+	_dwVersion           uint32 // unused but required for memory layout
 	SerialNumber         CRYPT_HASH_BLOB
 	SignatureAlgorithm   CRYPT_ALGORITHM_IDENTIFIER
 	Issuer               CRYPT_HASH_BLOB
@@ -65,12 +65,12 @@ type CERT_INFO struct {
 	SubjectPublicKeyInfo CERT_PUBLIC_KEY_INFO
 	IssuerUniqueId       CRYPT_BIT_BLOB
 	SubjectUniqueId      CRYPT_BIT_BLOB
-	cExtension           uint32
-	rgExtension          *CERT_EXTENSION
+	_cExtension          uint32          // unused but required for memory layout
+	_rgExtension         *CERT_EXTENSION // unused but required for memory layout
 }
 
 type CRYPT_ALGORITHM_IDENTIFIER struct {
-	pszObjId   *byte
+	_pszObjId  *byte // unused but required for memory layout
 	Parameters CRYPT_HASH_BLOB
 }
 
@@ -80,15 +80,15 @@ type CERT_PUBLIC_KEY_INFO struct {
 }
 
 type CRYPT_BIT_BLOB struct {
-	cbData      uint32
-	pbData      *byte
-	cUnusedBits uint32
+	_cbData      uint32 // unused but required for memory layout
+	_pbData      *byte  // unused but required for memory layout
+	_cUnusedBits uint32 // unused but required for memory layout
 }
 
 type CERT_EXTENSION struct {
-	pszObjId  *byte
-	fCritical int32
-	Value     CRYPT_HASH_BLOB
+	_pszObjId  *byte // unused but required for memory layout
+	_fCritical int32 // unused but required for memory layout
+	Value      CRYPT_HASH_BLOB
 }
 
 type CERT_CONTEXT struct {
@@ -105,9 +105,8 @@ var (
 	procCertOpenStore                 = crypt32.NewProc("CertOpenStore")
 	procCertCloseStore                = crypt32.NewProc("CertCloseStore")
 	procCertEnumCertificatesInStore   = crypt32.NewProc("CertEnumCertificatesInStore")
-	procCertFindCertificateInStore    = crypt32.NewProc("CertFindCertificateInStore")
-	procCertFreeCertificateContext    = crypt32.NewProc("CertFreeCertificateContext")
-	procCertGetCertificateContextProperty = crypt32.NewProc("CertGetCertificateContextProperty")
+	procCertFindCertificateInStore        = crypt32.NewProc("CertFindCertificateInStore")
+	procCertFreeCertificateContext        = crypt32.NewProc("CertFreeCertificateContext")
 	procCryptAcquireCertificatePrivateKey = crypt32.NewProc("CryptAcquireCertificatePrivateKey")
 	procNCryptFreeObject              = ncrypt.NewProc("NCryptFreeObject")
 )
@@ -217,7 +216,7 @@ func findCertByThumbprintFromStoreImpl(thumbprint string) (*LoadedCertificate, e
 		pbData: &thumbprintBytes[0],
 	}
 
-	certCtx, _, err := procCertFindCertificateInStore.Call(
+	certCtx, _, _ := procCertFindCertificateInStore.Call(
 		uintptr(store),
 		uintptr(X509_ASN_ENCODING|PKCS_7_ASN_ENCODING),
 		0,

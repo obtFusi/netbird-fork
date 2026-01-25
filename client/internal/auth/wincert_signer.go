@@ -45,11 +45,19 @@ var procNCryptSignHash = ncrypt.NewProc("NCryptSignHash")
 
 // Hash algorithm identifiers
 var (
-	algSHA1   = syscall.StringToUTF16Ptr("SHA1")
-	algSHA256 = syscall.StringToUTF16Ptr("SHA256")
-	algSHA384 = syscall.StringToUTF16Ptr("SHA384")
-	algSHA512 = syscall.StringToUTF16Ptr("SHA512")
+	algSHA1   *uint16
+	algSHA256 *uint16
+	algSHA384 *uint16
+	algSHA512 *uint16
 )
+
+func init() {
+	// These cannot fail as the strings don't contain NUL bytes
+	algSHA1, _ = syscall.UTF16PtrFromString("SHA1")
+	algSHA256, _ = syscall.UTF16PtrFromString("SHA256")
+	algSHA384, _ = syscall.UTF16PtrFromString("SHA384")
+	algSHA512, _ = syscall.UTF16PtrFromString("SHA512")
+}
 
 // WinCertSigner implements crypto.Signer using a certificate from Windows Certificate Store
 // This is used for mTLS authentication without exporting the private key.
@@ -324,7 +332,9 @@ func asn1Marshal(sig interface{}) ([]byte, error) {
 	sEnc := encodeASN1Integer(sBytes)
 
 	// SEQUENCE tag + length + content
-	content := append(rEnc, sEnc...)
+	var content []byte
+	content = append(content, rEnc...)
+	content = append(content, sEnc...)
 	return append([]byte{0x30, byte(len(content))}, content...), nil
 }
 

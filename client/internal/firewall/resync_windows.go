@@ -27,28 +27,6 @@ func updateRuleInterface(ruleName, newInterfaceName string) error {
 	return nil
 }
 
-// verifyRuleInterface checks if a firewall rule references the expected interface
-func verifyRuleInterface(ruleName, expectedInterface string) (bool, error) {
-	script := fmt.Sprintf(`
-$rule = Get-NetFirewallRule -DisplayName "%s" -ErrorAction Stop
-$filter = $rule | Get-NetFirewallInterfaceFilter
-$filter.InterfaceAlias
-`, ruleName)
-
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("verify rule interface failed: %w", err)
-	}
-
-	// Parse output and compare
-	// Note: InterfaceAlias might be "Any" if not set, or the specific interface name
-	actualInterface := string(output)
-	return actualInterface == expectedInterface || actualInterface == "Any", nil
-}
-
 // GetRulesWithWrongInterface returns firewall rules that reference the wrong interface
 func GetRulesWithWrongInterface(expectedInterface string) ([]string, error) {
 	script := fmt.Sprintf(`
