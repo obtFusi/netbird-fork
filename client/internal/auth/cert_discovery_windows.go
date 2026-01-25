@@ -55,7 +55,7 @@ type CRYPT_HASH_BLOB struct {
 }
 
 type CERT_INFO struct {
-	_dwVersion           uint32 // unused but required for memory layout
+	dwVersion            uint32 //nolint:unused // required for memory layout
 	SerialNumber         CRYPT_HASH_BLOB
 	SignatureAlgorithm   CRYPT_ALGORITHM_IDENTIFIER
 	Issuer               CRYPT_HASH_BLOB
@@ -65,12 +65,12 @@ type CERT_INFO struct {
 	SubjectPublicKeyInfo CERT_PUBLIC_KEY_INFO
 	IssuerUniqueId       CRYPT_BIT_BLOB
 	SubjectUniqueId      CRYPT_BIT_BLOB
-	_cExtension          uint32          // unused but required for memory layout
-	_rgExtension         *CERT_EXTENSION // unused but required for memory layout
+	cExtension           uint32          //nolint:unused // required for memory layout
+	rgExtension          *CERT_EXTENSION //nolint:unused // required for memory layout
 }
 
 type CRYPT_ALGORITHM_IDENTIFIER struct {
-	_pszObjId  *byte // unused but required for memory layout
+	pszObjId   *byte //nolint:unused // required for memory layout
 	Parameters CRYPT_HASH_BLOB
 }
 
@@ -80,15 +80,15 @@ type CERT_PUBLIC_KEY_INFO struct {
 }
 
 type CRYPT_BIT_BLOB struct {
-	_cbData      uint32 // unused but required for memory layout
-	_pbData      *byte  // unused but required for memory layout
-	_cUnusedBits uint32 // unused but required for memory layout
+	cbData      uint32 //nolint:unused // required for memory layout
+	pbData      *byte  //nolint:unused // required for memory layout
+	cUnusedBits uint32 //nolint:unused // required for memory layout
 }
 
 type CERT_EXTENSION struct {
-	_pszObjId  *byte // unused but required for memory layout
-	_fCritical int32 // unused but required for memory layout
-	Value      CRYPT_HASH_BLOB
+	pszObjId  *byte //nolint:unused // required for memory layout
+	fCritical int32 //nolint:unused // required for memory layout
+	Value     CRYPT_HASH_BLOB
 }
 
 type CERT_CONTEXT struct {
