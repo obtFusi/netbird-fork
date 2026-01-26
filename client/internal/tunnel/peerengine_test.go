@@ -1,5 +1,5 @@
 // Machine Tunnel Fork - PeerEngine Unit Tests
-// Tests for Signal/Relay integration via Direct Reuse pattern.
+// Validates Signal/Relay integration via Direct Reuse pattern.
 //
 // References:
 // - Issue #110: PeerEngine with Direct Reuse
