@@ -1,6 +1,11 @@
 // Machine Tunnel Fork - Core Machine Tunnel Logic
 // This file contains the main orchestration for Windows pre-login VPN.
-// It integrates bootstrap, WireGuard setup, NRPT, and firewall configuration.
+// It integrates bootstrap, WireGuard setup, NRPT, firewall configuration,
+// and Signal/Relay peer connections via PeerEngine.
+//
+// References:
+// - Issue #111: Integrate PeerEngine into machine.go
+// - ADR-001: Direct Reuse pattern for Signal/Relay
 
 //go:build windows
 
@@ -11,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -19,6 +25,9 @@ import (
 	"github.com/netbirdio/netbird/client/iface"
 	"github.com/netbirdio/netbird/client/internal/profilemanager"
 	"github.com/netbirdio/netbird/client/ssh"
+	"github.com/netbirdio/netbird/client/system"
+	mgm "github.com/netbirdio/netbird/shared/management/client"
+	mgmProto "github.com/netbirdio/netbird/shared/management/proto"
 )
 
 // MachineState represents the current state of the Machine Tunnel
@@ -70,6 +79,7 @@ type MachineTunnel struct {
 
 	// Current connection result
 	bootstrapResult *BootstrapResult
+	machineConfig   *MachineConfig // Stored for management client creation
 	resultMu        sync.RWMutex
 
 	// Current machine config (contains WG private key)
@@ -77,6 +87,12 @@ type MachineTunnel struct {
 
 	// WireGuard interface
 	wgInterface *iface.WGIface
+
+	// Management client for GetNetworkMap calls
+	mgmClient mgm.Client
+
+	// Peer Engine for Signal/Relay connections (Issue #110/111)
+	peerEngine *PeerEngine
 
 	// Callbacks
 	onStateChange func(MachineState, error)
@@ -352,6 +368,7 @@ func (t *MachineTunnel) toMachineConfig() (*MachineConfig, error) {
 // 2. Setting up WireGuard interface
 // 3. Configuring NRPT rules for AD DNS
 // 4. Configuring firewall rules for DC traffic
+// 5. Initialize PeerEngine and connect to remote peers (Issue #111)
 func (t *MachineTunnel) connect() error {
 	log.Info("Machine Tunnel connecting...")
 
@@ -374,9 +391,10 @@ func (t *MachineTunnel) connect() error {
 		"peer_ip":     result.PeerConfig.GetAddress(),
 	}).Info("Bootstrap successful")
 
-	// Store result for later use
+	// Store result and config for later use
 	t.resultMu.Lock()
 	t.bootstrapResult = result
+	t.machineConfig = machineConfig
 	t.resultMu.Unlock()
 
 	// Step 2: Setup WireGuard interface
@@ -395,6 +413,11 @@ func (t *MachineTunnel) connect() error {
 	if err := t.configureFirewall(result); err != nil {
 		// Non-fatal - log warning and continue
 		log.WithError(err).Warn("Firewall configuration failed, DC traffic may be blocked")
+	}
+
+	// Step 5: Initialize PeerEngine and connect to remote peers (Issue #111)
+	if err := t.initializePeerEngine(result, machineConfig); err != nil {
+		return fmt.Errorf("PeerEngine initialization failed: %w", err)
 	}
 
 	return nil
@@ -532,6 +555,257 @@ func (t *MachineTunnel) configureFirewall(result *BootstrapResult) error {
 	return nil
 }
 
+// initializePeerEngine creates and starts the PeerEngine for Signal/Relay connections.
+// It fetches the current NetworkMap to get RemotePeers and connects to them.
+// Reference: Issue #111, ADR-001 (Direct Reuse pattern)
+func (t *MachineTunnel) initializePeerEngine(result *BootstrapResult, machineConfig *MachineConfig) error {
+	log.Info("Initializing PeerEngine for Signal/Relay connections")
+
+	// Generate WireGuard key for peer connections FIRST
+	// This key is used for both management client authentication and PeerEngine
+	wgKey, err := wgtypes.GenerateKey()
+	if err != nil {
+		return fmt.Errorf("generate WireGuard key: %w", err)
+	}
+
+	// Create management client for GetNetworkMap calls
+	mgmClient, err := t.createMgmClient(machineConfig, wgKey)
+	if err != nil {
+		return fmt.Errorf("create management client: %w", err)
+	}
+	t.mgmClient = mgmClient
+
+	// Get NetworkMap to retrieve RemotePeers
+	sysInfo := system.GetInfo(t.ctx)
+	networkMap, err := mgmClient.GetNetworkMap(sysInfo)
+	if err != nil {
+		return fmt.Errorf("get network map: %w", err)
+	}
+
+	remotePeers := networkMap.GetRemotePeers()
+	if len(remotePeers) == 0 {
+		log.Warn("No remote peers in NetworkMap - tunnel will have no peer connections")
+		// Not an error - machine might not have any assigned peers yet
+		return nil
+	}
+
+	log.WithField("peer_count", len(remotePeers)).Info("Got remote peers from NetworkMap")
+
+	// Build PeerEngineConfig from BootstrapResult
+	peerEngineCfg, err := t.buildPeerEngineConfig(result, wgKey)
+	if err != nil {
+		return fmt.Errorf("build peer engine config: %w", err)
+	}
+
+	// Create PeerEngine
+	peerEngine, err := NewPeerEngine(t.ctx, wgKey, peerEngineCfg)
+	if err != nil {
+		return fmt.Errorf("create peer engine: %w", err)
+	}
+	t.peerEngine = peerEngine
+
+	// Start PeerEngine (starts Signal receive loop and Relay manager)
+	if err := t.peerEngine.Start(); err != nil {
+		return fmt.Errorf("start peer engine: %w", err)
+	}
+
+	// Connect to remote peers (parallel with limit)
+	if err := t.connectToRemotePeers(remotePeers); err != nil {
+		log.WithError(err).Warn("Some peer connections failed")
+		// Not fatal - some peers might still work
+	}
+
+	log.Info("PeerEngine initialized successfully")
+	return nil
+}
+
+// createMgmClient creates a management client for ongoing management server communication.
+// This is separate from Bootstrap which creates its own temporary client.
+// The wgKey parameter is the WireGuard private key used for client authentication.
+func (t *MachineTunnel) createMgmClient(machineConfig *MachineConfig, wgKey wgtypes.Key) (mgm.Client, error) {
+	if machineConfig.Config == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+
+	tlsEnabled := machineConfig.Config.ManagementURL.Scheme == "https"
+
+	client, err := mgm.NewClient(t.ctx, machineConfig.Config.ManagementURL.Host, wgKey, tlsEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("create management client: %w", err)
+	}
+
+	return client, nil
+}
+
+// buildPeerEngineConfig creates a PeerEngineConfig from BootstrapResult and NetbirdConfig.
+func (t *MachineTunnel) buildPeerEngineConfig(result *BootstrapResult, wgKey wgtypes.Key) (PeerEngineConfig, error) {
+	netbirdCfg := result.NetbirdConfig
+	if netbirdCfg == nil {
+		return PeerEngineConfig{}, fmt.Errorf("no NetbirdConfig in bootstrap result")
+	}
+
+	// Extract Signal config
+	signalCfg := netbirdCfg.GetSignal()
+	if signalCfg == nil {
+		return PeerEngineConfig{}, fmt.Errorf("no Signal config in NetbirdConfig")
+	}
+
+	// Extract Relay URLs
+	relayURLs := extractRelayURLs(netbirdCfg)
+
+	// Extract Relay Token
+	relayToken := extractRelayToken(netbirdCfg)
+
+	// Extract STUN URLs
+	stunURLs := extractStunURLs(netbirdCfg)
+
+	// Extract TURN configs
+	turnConfigs := extractTurnConfigs(netbirdCfg)
+
+	cfg := PeerEngineConfig{
+		SignalAddr:     signalCfg.GetUri(),
+		SignalTLS:      signalCfg.GetProtocol() == mgmProto.HostConfig_HTTPS,
+		SignalProtocol: signalCfg.GetProtocol().String(),
+
+		RelayURLs:  relayURLs,
+		RelayToken: relayToken,
+
+		StunURLs: stunURLs,
+		TurnURLs: turnConfigs,
+
+		// ICE config - use defaults for now
+		InterfaceBlackList:   []string{},
+		DisableIPv6Discovery: false,
+		NATExternalIPs:       []string{},
+
+		// WireGuard config - will be populated per-peer
+		WgInterface:  nil, // Set when connecting peers
+		WgPort:       51820,
+		PreSharedKey: nil,
+
+		MTU:           uint16(result.PeerConfig.GetMtu()),
+		MgmtURL:       t.config.ManagementURL,
+		MaxConcurrent: DefaultMaxConcurrentPeers,
+	}
+
+	return cfg, nil
+}
+
+// connectToRemotePeers connects to all remote peers in parallel with a concurrency limit.
+func (t *MachineTunnel) connectToRemotePeers(remotePeers []*mgmProto.RemotePeerConfig) error {
+	if t.peerEngine == nil {
+		return fmt.Errorf("peer engine not initialized")
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, DefaultMaxConcurrentPeers)
+	var connErrors atomic.Int32
+
+	for _, rp := range remotePeers {
+		wg.Add(1)
+		go func(peer *mgmProto.RemotePeerConfig) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			peerKey := peer.GetWgPubKey()
+			allowedIPs := peer.GetAllowedIps()
+
+			log.WithField("peer", peerKey[:8]).Debug("Connecting to peer")
+
+			_, err := t.peerEngine.ConnectPeer(t.ctx, peerKey, allowedIPs)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"peer":  peerKey[:8],
+					"error": err,
+				}).Warn("Failed to connect to peer")
+				connErrors.Add(1)
+				return
+			}
+
+			log.WithField("peer", peerKey[:8]).Info("Connected to peer")
+		}(rp)
+	}
+
+	wg.Wait()
+
+	failedCount := connErrors.Load()
+	if failedCount == int32(len(remotePeers)) {
+		return fmt.Errorf("all %d peer connections failed", len(remotePeers))
+	}
+
+	if failedCount > 0 {
+		log.WithFields(log.Fields{
+			"failed":    failedCount,
+			"succeeded": int32(len(remotePeers)) - failedCount,
+		}).Warn("Some peer connections failed")
+	}
+
+	return nil
+}
+
+// extractRelayURLs extracts Relay URLs from NetbirdConfig.
+func extractRelayURLs(cfg *mgmProto.NetbirdConfig) []string {
+	if cfg == nil || cfg.GetRelay() == nil {
+		return nil
+	}
+	return cfg.GetRelay().GetUrls()
+}
+
+// extractRelayToken extracts HMAC token for Relay auth from NetbirdConfig.
+func extractRelayToken(cfg *mgmProto.NetbirdConfig) *RelayToken {
+	if cfg == nil || cfg.GetRelay() == nil {
+		return nil
+	}
+	relay := cfg.GetRelay()
+	payload := relay.GetTokenPayload()
+	sig := relay.GetTokenSignature()
+	if payload == "" || sig == "" {
+		return nil
+	}
+	return &RelayToken{Payload: payload, Signature: sig}
+}
+
+// extractStunURLs extracts STUN URLs from NetbirdConfig.
+func extractStunURLs(cfg *mgmProto.NetbirdConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	stuns := cfg.GetStuns()
+	if len(stuns) == 0 {
+		return nil
+	}
+	urls := make([]string, 0, len(stuns))
+	for _, s := range stuns {
+		urls = append(urls, s.GetUri())
+	}
+	return urls
+}
+
+// extractTurnConfigs extracts TURN configurations with credentials from NetbirdConfig.
+func extractTurnConfigs(cfg *mgmProto.NetbirdConfig) []TurnConfig {
+	if cfg == nil {
+		return nil
+	}
+	turns := cfg.GetTurns()
+	if len(turns) == 0 {
+		return nil
+	}
+	configs := make([]TurnConfig, 0, len(turns))
+	for _, turn := range turns {
+		host := turn.GetHostConfig()
+		if host == nil {
+			continue
+		}
+		configs = append(configs, TurnConfig{
+			URL:      host.GetUri(),
+			Username: turn.GetUser(),
+			Password: turn.GetPassword(),
+		})
+	}
+	return configs
+}
+
 // maintainConnection monitors the connection and handles keepalives
 func (t *MachineTunnel) maintainConnection() {
 	// Initialize health checker
@@ -578,11 +852,28 @@ func (t *MachineTunnel) maintainConnection() {
 	}
 }
 
-// Cleanup removes NRPT rules, firewall rules, and WireGuard interface
+// Cleanup removes NRPT rules, firewall rules, WireGuard interface,
+// and closes PeerEngine and management client.
 func (t *MachineTunnel) Cleanup() error {
 	log.Info("Machine Tunnel cleanup...")
 
 	var errs []error
+
+	// Close PeerEngine first (to stop peer connections and Signal/Relay)
+	if t.peerEngine != nil {
+		if err := t.peerEngine.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("PeerEngine cleanup: %w", err))
+		}
+		t.peerEngine = nil
+	}
+
+	// Close management client
+	if t.mgmClient != nil {
+		if err := t.mgmClient.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("management client cleanup: %w", err))
+		}
+		t.mgmClient = nil
+	}
 
 	// Remove NRPT rules
 	nrptMgr := NewNRPTManager()
