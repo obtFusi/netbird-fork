@@ -79,10 +79,9 @@ type MachineTunnel struct {
 
 	// Current connection result
 	bootstrapResult *BootstrapResult
-	machineConfig   *MachineConfig // Stored for management client creation
 	resultMu        sync.RWMutex
 
-	// Current machine config (contains WG private key)
+	// Current machine config (contains WG private key, stored for management client creation)
 	machineConfig *MachineConfig
 
 	// WireGuard interface
