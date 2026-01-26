@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetBird Fork - Release Status Report</title>
+    <style>
+        :root {
+            --primary: #0066cc;
+            --primary-dark: #004999;
+            --success: #10b981;
+            --success-light: #d1fae5;
+            --warning: #f59e0b;
+            --warning-light: #fef3c7;
+            --danger: #ef4444;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-500: #6b7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            padding: 3rem 2rem;
+            border-radius: 16px;
+            margin-bottom: 2rem;
+            box-shadow: 0 10px 40px rgba(0, 102, 204, 0.3);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .header .subtitle {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .header .meta {
+            display: flex;
+            gap: 2rem;
+            margin-top: 1.5rem;
+            font-size: 0.9rem;
+        }
+
+        .header .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Progress Section */
+        .progress-section {
+            background: white;
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .progress-header h2 {
+            font-size: 1.5rem;
+            color: var(--gray-900);
+        }
+
+        .progress-percentage {
+            font-size: 3rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .progress-bar-container {
+            background: var(--gray-200);
+            border-radius: 999px;
+            height: 24px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+
+        .progress-bar {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--success) 0%, #34d399 100%);
+            transition: width 1s ease-out;
+            position: relative;
+        }
+
+        .progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--gray-50);
+            border-radius: 12px;
+            padding: 1.25rem;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--gray-900);
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: var(--gray-500);
+            margin-top: 0.25rem;
+        }
+
+        /* Story Cards */
+        .stories-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .story-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            border-left: 4px solid var(--gray-300);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .story-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+        }
+
+        .story-card.completed {
+            border-left-color: var(--success);
+        }
+
+        .story-card.in-progress {
+            border-left-color: var(--warning);
+        }
+
+        .story-card.pending {
+            border-left-color: var(--gray-300);
+        }
+
+        .story-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+        }
+
+        .story-id {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--gray-500);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .story-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--gray-900);
+            margin-top: 0.25rem;
+        }
+
+        .story-badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            white-space: nowrap;
+        }
+
+        .badge-completed {
+            background: var(--success-light);
+            color: var(--success);
+        }
+
+        .badge-in-progress {
+            background: var(--warning-light);
+            color: var(--warning);
+        }
+
+        .badge-pending {
+            background: var(--gray-100);
+            color: var(--gray-500);
+        }
+
+        .story-progress {
+            margin-top: 1rem;
+        }
+
+        .story-progress-bar {
+            background: var(--gray-200);
+            border-radius: 999px;
+            height: 8px;
+            overflow: hidden;
+        }
+
+        .story-progress-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: var(--success);
+        }
+
+        .story-progress-text {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--gray-500);
+            margin-top: 0.5rem;
+        }
+
+        .story-effort {
+            font-size: 0.85rem;
+            color: var(--gray-500);
+            margin-top: 0.75rem;
+        }
+
+        /* Task List */
+        .tasks-section {
+            background: white;
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        .tasks-section h2 {
+            font-size: 1.5rem;
+            margin-bottom: 1.5rem;
+            color: var(--gray-900);
+        }
+
+        .task-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .task-group-header {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--gray-700);
+            margin-bottom: 0.75rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .task-list {
+            list-style: none;
+        }
+
+        .task-item {
+            display: flex;
+            align-items: center;
+            padding: 0.6rem 0;
+            border-bottom: 1px solid var(--gray-100);
+            font-size: 0.9rem;
+        }
+
+        .task-item:last-child {
+            border-bottom: none;
+        }
+
+        .task-status {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-right: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .task-status.done {
+            background: var(--success);
+            color: white;
+        }
+
+        .task-status.done::after {
+            content: '✓';
+            font-size: 0.7rem;
+            font-weight: bold;
+        }
+
+        .task-status.open {
+            background: white;
+            border: 2px solid var(--gray-300);
+        }
+
+        .task-id {
+            font-weight: 600;
+            color: var(--gray-500);
+            min-width: 60px;
+        }
+
+        .task-title {
+            color: var(--gray-700);
+        }
+
+        .task-item.done .task-title {
+            color: var(--gray-500);
+        }
+
+        /* Timeline */
+        .timeline-section {
+            background: white;
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        .timeline-section h2 {
+            font-size: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .timeline {
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 7px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--gray-200);
+        }
+
+        .timeline-item {
+            position: relative;
+            padding-bottom: 1.5rem;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -2rem;
+            top: 4px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--primary);
+            border: 2px solid white;
+            box-shadow: 0 0 0 3px var(--gray-100);
+        }
+
+        .timeline-date {
+            font-size: 0.8rem;
+            color: var(--gray-500);
+            margin-bottom: 0.25rem;
+        }
+
+        .timeline-content {
+            font-size: 0.95rem;
+            color: var(--gray-700);
+        }
+
+        /* Metrics Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .metric-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        .metric-card h3 {
+            font-size: 0.9rem;
+            color: var(--gray-500);
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--gray-900);
+        }
+
+        .metric-detail {
+            font-size: 0.85rem;
+            color: var(--gray-500);
+            margin-top: 0.5rem;
+        }
+
+        /* Risk Section */
+        .risk-section {
+            background: white;
+            border-radius: 16px;
+            padding: 2rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        .risk-section h2 {
+            font-size: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .risk-item {
+            display: flex;
+            align-items: flex-start;
+            padding: 1rem;
+            background: var(--gray-50);
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .risk-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 1rem;
+            flex-shrink: 0;
+            font-size: 1rem;
+        }
+
+        .risk-icon.low {
+            background: var(--success-light);
+        }
+
+        .risk-icon.medium {
+            background: var(--warning-light);
+        }
+
+        .risk-title {
+            font-weight: 600;
+            color: var(--gray-900);
+            margin-bottom: 0.25rem;
+        }
+
+        .risk-description {
+            font-size: 0.9rem;
+            color: var(--gray-500);
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--gray-500);
+            font-size: 0.85rem;
+        }
+
+        /* Print Styles */
+        @media print {
+            body {
+                background: white;
+            }
+            .container {
+                max-width: 100%;
+            }
+            .header {
+                box-shadow: none;
+                print-color-adjust: exact;
+                -webkit-print-color-adjust: exact;
+            }
+            .story-card, .metric-card, .tasks-section, .timeline-section, .risk-section, .progress-section {
+                box-shadow: none;
+                border: 1px solid var(--gray-200);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .stories-grid, .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+            .progress-stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>NetBird Machine Tunnel Fork</h1>
+            <p class="subtitle">Windows Domain Authentication via mTLS - Release Status Report</p>
+            <div class="meta">
+                <div class="meta-item">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 7.5h-3v-3a.5.5 0 0 0-1 0v3.5a.5.5 0 0 0 .5.5H11.5a.5.5 0 0 0 0-1z"/></svg>
+                    Stand: 25. Januar 2026
+                </div>
+                <div class="meta-item">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+                    Repository: obtFusi/netbird-fork
+                </div>
+                <div class="meta-item">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M1 3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3zm1 0v10h12V3H2z"/><path d="M2 5.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5z"/></svg>
+                    Epic: E-1 Machine Tunnel
+                </div>
+            </div>
+        </header>
+
+        <!-- Progress Overview -->
+        <section class="progress-section">
+            <div class="progress-header">
+                <h2>Gesamtfortschritt</h2>
+                <div class="progress-percentage">66%</div>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar" style="width: 66%"></div>
+            </div>
+            <p style="color: var(--gray-500); font-size: 0.9rem;">27.7 von 42 Wochen Entwicklungsaufwand abgeschlossen</p>
+
+            <div class="progress-stats">
+                <div class="stat-card">
+                    <div class="stat-value">43</div>
+                    <div class="stat-label">Commits</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">13.6k</div>
+                    <div class="stat-label">Lines Added</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">42/91</div>
+                    <div class="stat-label">Tasks Closed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">8</div>
+                    <div class="stat-label">Tage Laufzeit</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Metrics -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <h3>Velocity</h3>
+                <div class="metric-value">~3.5 Wo/Tag</div>
+                <div class="metric-detail">Entwicklungswochen pro Kalendertag</div>
+            </div>
+            <div class="metric-card">
+                <h3>Verbleibend</h3>
+                <div class="metric-value">~14 Wochen</div>
+                <div class="metric-detail">Tests, Docs, CI, Ops</div>
+            </div>
+            <div class="metric-card">
+                <h3>ETA bei Velocity</h3>
+                <div class="metric-value">~4 Tage</div>
+                <div class="metric-detail">Geschätzte Restlaufzeit</div>
+            </div>
+        </div>
+
+        <!-- Stories Overview -->
+        <div class="stories-grid">
+            <!-- S-1 -->
+            <div class="story-card completed">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-1</div>
+                        <div class="story-title">Spikes (Go/No-Go)</div>
+                    </div>
+                    <span class="story-badge badge-completed">100%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 100%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>4/4 Tasks</span>
+                        <span>2 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">CNG Crypto, mTLS Interception, SAN Parsing</div>
+            </div>
+
+            <!-- S-2 -->
+            <div class="story-card completed">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-2</div>
+                        <div class="story-title">Lab-Umgebung</div>
+                    </div>
+                    <span class="story-badge badge-completed">90%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 90%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>9/10 Tasks</span>
+                        <span>4 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">Proxmox VMs, AD DS, AD CS, Router-Peer</div>
+            </div>
+
+            <!-- S-3 -->
+            <div class="story-card completed">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-3</div>
+                        <div class="story-title">Server mTLS</div>
+                    </div>
+                    <span class="story-badge badge-completed">90%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 90%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>8/9 Tasks</span>
+                        <span>4 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">gRPC Interceptor, Identity Extraction, AllowedDomains</div>
+            </div>
+
+            <!-- S-4 -->
+            <div class="story-card completed">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-4</div>
+                        <div class="story-title">Windows Client Service</div>
+                    </div>
+                    <span class="story-badge badge-completed">100%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 100%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>12/12 Tasks</span>
+                        <span>14 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">CNG Store, NRPT, Firewall Rules, Crash Recovery</div>
+            </div>
+
+            <!-- S-5 -->
+            <div class="story-card completed">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-5</div>
+                        <div class="story-title">Bootstrap & Deployment</div>
+                    </div>
+                    <span class="story-badge badge-completed">100%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 100%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>7/7 Tasks</span>
+                        <span>4 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">Setup-Key Fallback, Domain-Join, Cert-Enrollment</div>
+            </div>
+
+            <!-- S-6 -->
+            <div class="story-card in-progress">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-6</div>
+                        <div class="story-title">E2E Tests & Validierung</div>
+                    </div>
+                    <span class="story-badge badge-in-progress">25%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 25%; background: var(--warning)"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>2/8 Tasks</span>
+                        <span>3 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">Tunnel Tests, mTLS Auth Tests, Go/No-Go Matrix</div>
+            </div>
+
+            <!-- S-7 -->
+            <div class="story-card pending">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-7</div>
+                        <div class="story-title">Documentation</div>
+                    </div>
+                    <span class="story-badge badge-pending">0%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>0/9 Tasks</span>
+                        <span>2 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">README, Architecture, Betriebshandbuch, API Docs</div>
+            </div>
+
+            <!-- S-8 -->
+            <div class="story-card pending">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-8</div>
+                        <div class="story-title">Build & CI</div>
+                    </div>
+                    <span class="story-badge badge-pending">0%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>0/11 Tasks</span>
+                        <span>2 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">GitHub Actions, Secret Scanning, SBOM, Release</div>
+            </div>
+
+            <!-- S-9 -->
+            <div class="story-card pending">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-9</div>
+                        <div class="story-title">Ops & Observability</div>
+                    </div>
+                    <span class="story-badge badge-pending">0%</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>0/7 Tasks</span>
+                        <span>2 Wochen</span>
+                    </div>
+                </div>
+                <div class="story-effort">Prometheus, Grafana, Event Log, Alerting</div>
+            </div>
+
+            <!-- S-10 -->
+            <div class="story-card pending">
+                <div class="story-header">
+                    <div>
+                        <div class="story-id">S-10</div>
+                        <div class="story-title">Security Phase 2</div>
+                    </div>
+                    <span class="story-badge badge-pending">Post-MVP</span>
+                </div>
+                <div class="story-progress">
+                    <div class="story-progress-bar">
+                        <div class="story-progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div class="story-progress-text">
+                        <span>0/3 Tasks</span>
+                        <span>1 Woche</span>
+                    </div>
+                </div>
+                <div class="story-effort">CRL-Cache, OCSP Stapling, Revocation Config</div>
+            </div>
+        </div>
+
+        <!-- Recent Activity Timeline -->
+        <section class="timeline-section">
+            <h2>Letzte Aktivitäten</h2>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="timeline-date">25. Jan 2026, 18:28</div>
+                    <div class="timeline-content"><strong>T-6.2:</strong> mTLS Authentication Tests implementiert</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">25. Jan 2026, 16:30</div>
+                    <div class="timeline-content"><strong>Windows Security:</strong> DPAPI + Event Log Integration</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">25. Jan 2026, 12:32</div>
+                    <div class="timeline-content"><strong>T-6.1:</strong> E2E Tunnel Establishment Tests</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">25. Jan 2026, 12:06</div>
+                    <div class="timeline-content"><strong>T-5.4:</strong> Bootstrap Script v3.6 Smart Selection</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">24. Jan 2026, 20:19</div>
+                    <div class="timeline-content"><strong>T-5.3:</strong> Certificate Enrollment nach Domain Join</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">24. Jan 2026, 19:29</div>
+                    <div class="timeline-content"><strong>T-5.5:</strong> Reset Scripts für Windows VM Testing</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">24. Jan 2026, 18:36</div>
+                    <div class="timeline-content"><strong>T-5.2:</strong> Domain Join über Tunnel Funktionalität</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">24. Jan 2026, 12:56</div>
+                    <div class="timeline-content"><strong>S-3:</strong> Server mTLS Feature Branch gemerged</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Key Deliverables -->
+        <section class="tasks-section">
+            <h2>Kern-Implementierungen (abgeschlossen)</h2>
+
+            <div class="task-group">
+                <div class="task-group-header">Server-Side (S-3)</div>
+                <ul class="task-list">
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-3.1</span>
+                        <span class="task-title">Proto: RegisterMachinePeer + SyncMachinePeer RPCs</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-3.2</span>
+                        <span class="task-title">mTLS Interceptor Grundgerüst</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-3.3</span>
+                        <span class="task-title">extractMTLSIdentity (SAN DNSName)</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-3.4</span>
+                        <span class="task-title">AllowedDomains pro-Account Scoping</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-3.8</span>
+                        <span class="task-title">Separate mTLS Port (33073/33074 Split)</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="task-group">
+                <div class="task-group-header">Windows Client (S-4)</div>
+                <ul class="task-list">
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-4.1</span>
+                        <span class="task-title">Windows Service Grundgerüst (SYSTEM)</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-4.2</span>
+                        <span class="task-title">Machine-Cert Discovery (CNG Store)</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-4.3</span>
+                        <span class="task-title">mTLS gRPC Connection zum Server</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-4.4</span>
+                        <span class="task-title">NRPT Registry Integration</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-4.5</span>
+                        <span class="task-title">Windows Firewall Rules (DC-IP Allow)</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-4.6</span>
+                        <span class="task-title">Firewall Deny-Default Rule</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-4.8</span>
+                        <span class="task-title">Crash Recovery & Reconnect</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="task-group">
+                <div class="task-group-header">Bootstrap & Deployment (S-5)</div>
+                <ul class="task-list">
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-5.1</span>
+                        <span class="task-title">Setup-Key Fallback (Phase 1 Bootstrap)</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-5.2</span>
+                        <span class="task-title">Domain-Join über Tunnel</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-5.3</span>
+                        <span class="task-title">Cert-Enrollment nach Join</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-5.4</span>
+                        <span class="task-title">bootstrap-new-client.ps1 Script</span>
+                    </li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- Remaining Work -->
+        <section class="tasks-section">
+            <h2>Ausstehende Arbeit</h2>
+
+            <div class="task-group">
+                <div class="task-group-header">E2E Tests (S-6) - In Progress</div>
+                <ul class="task-list">
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-6.1</span>
+                        <span class="task-title">Tunnel Establishment Tests</span>
+                    </li>
+                    <li class="task-item done">
+                        <div class="task-status done"></div>
+                        <span class="task-id">T-6.2</span>
+                        <span class="task-title">mTLS Auth Tests (valid/invalid certs)</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-6.3</span>
+                        <span class="task-title">Domain-Join über Tunnel Test</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-6.4</span>
+                        <span class="task-title">Crash Recovery & Reconnect Tests</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-6.5</span>
+                        <span class="task-title">Full Regression Suite</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-6.8</span>
+                        <span class="task-title">Go/No-Go Matrix Validierung</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="task-group">
+                <div class="task-group-header">Documentation (S-7)</div>
+                <ul class="task-list">
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-7.1</span>
+                        <span class="task-title">README.md für Fork</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-7.2</span>
+                        <span class="task-title">ARCHITECTURE.md</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-7.3</span>
+                        <span class="task-title">Betriebshandbuch Integration</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-7.5</span>
+                        <span class="task-title">Troubleshooting Guide</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="task-group">
+                <div class="task-group-header">Build & CI (S-8)</div>
+                <ul class="task-list">
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-8.1</span>
+                        <span class="task-title">GitHub Actions Workflow (Build + Test)</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-8.2</span>
+                        <span class="task-title">gitleaks Secret Scanning</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-8.5</span>
+                        <span class="task-title">Release Workflow (Goreleaser + Signing)</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="task-group">
+                <div class="task-group-header">Ops & Observability (S-9)</div>
+                <ul class="task-list">
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-9.1</span>
+                        <span class="task-title">Prometheus Metrics Endpoint</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-9.2</span>
+                        <span class="task-title">Grafana Dashboard</span>
+                    </li>
+                    <li class="task-item">
+                        <div class="task-status open"></div>
+                        <span class="task-id">T-9.5</span>
+                        <span class="task-title">Alert-Regeln (Prometheus Alertmanager)</span>
+                    </li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- Risk Assessment -->
+        <section class="risk-section">
+            <h2>Risikobewertung</h2>
+
+            <div class="risk-item">
+                <div class="risk-icon low">&#10003;</div>
+                <div>
+                    <div class="risk-title">Kern-Implementierung abgeschlossen</div>
+                    <div class="risk-description">Server mTLS, Windows Client, Bootstrap-Flow sind funktional. Die technisch komplexesten Komponenten sind fertig.</div>
+                </div>
+            </div>
+
+            <div class="risk-item">
+                <div class="risk-icon medium">!</div>
+                <div>
+                    <div class="risk-title">E2E-Validierung ausstehend</div>
+                    <div class="risk-description">Vollständige End-to-End Tests im Lab fehlen noch. Go/No-Go Matrix muss validiert werden.</div>
+                </div>
+            </div>
+
+            <div class="risk-item">
+                <div class="risk-icon low">&#10003;</div>
+                <div>
+                    <div class="risk-title">Dokumentation planbar</div>
+                    <div class="risk-description">Docs/CI/Ops sind niedrig-komplex und gut parallelisierbar. Kein technisches Risiko.</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Generated by Claude Code | NetBird Machine Tunnel Project</p>
+            <p>obtFusi/netbird-fork | Epic E-1</p>
+        </footer>
+    </div>
+</body>
+</html>

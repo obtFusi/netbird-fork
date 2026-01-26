@@ -74,8 +74,9 @@ type PeerHealth struct {
 	FailReason string    `json:"fail_reason,omitempty"`
 }
 
-// TunnelHealth represents the aggregated health status of the tunnel.
-type TunnelHealth struct {
+// Health represents the aggregated health status of the tunnel.
+// Named "Health" instead of "TunnelHealth" to avoid repetition (tunnel.Health vs tunnel.TunnelHealth).
+type Health struct {
 	State     string       `json:"state"` // "healthy", "degraded", "failed", "unknown"
 	PeerCount int          `json:"peer_count"`
 	Connected int          `json:"connected"`
@@ -229,15 +230,15 @@ func (h *HealthChecker) SetPeerKeys(keys []string) {
 }
 
 // GetDetailedStatus returns aggregated health status from all monitored peers.
-func (h *HealthChecker) GetDetailedStatus() TunnelHealth {
+func (h *HealthChecker) GetDetailedStatus() Health {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	if h.statusRecorder == nil || len(h.peerKeys) == 0 {
-		return TunnelHealth{State: "unknown"}
+		return Health{State: "unknown"}
 	}
 
-	health := TunnelHealth{
+	health := Health{
 		PeerCount: len(h.peerKeys),
 		Peers:     make([]PeerHealth, 0, len(h.peerKeys)),
 	}
@@ -293,32 +294,6 @@ func (h *HealthChecker) SetDegraded(reason string) {
 
 	if oldState != "degraded" {
 		h.logStateChange(oldState, "degraded")
-	}
-}
-
-// setHealthy marks the tunnel as healthy (internal use).
-func (h *HealthChecker) setHealthy() {
-	h.mu.Lock()
-	oldState := h.currentState
-	h.currentState = "healthy"
-	h.degradedReason = ""
-	h.mu.Unlock()
-
-	if oldState != "healthy" && oldState != "" {
-		h.logStateChange(oldState, "healthy")
-	}
-}
-
-// setFailed marks the tunnel as failed (internal use).
-func (h *HealthChecker) setFailed(reason string) {
-	h.mu.Lock()
-	oldState := h.currentState
-	h.currentState = "failed"
-	h.degradedReason = reason
-	h.mu.Unlock()
-
-	if oldState != "failed" {
-		h.logStateChange(oldState, "failed")
 	}
 }
 
