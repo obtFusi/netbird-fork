@@ -361,9 +361,11 @@ func (pe *PeerEngine) convertToOfferAnswer(msg *sProto.Message) (*peer.OfferAnsw
 }
 
 // getClientRoutes returns routes for candidate processing.
-// TODO-1: Implement when RouteManager is integrated, for now return nil.
+// Machine Tunnel uses static routing via WireGuard AllowedIPs on peer connections.
+// Dynamic client routes (RouteManager) are not needed - traffic is routed to
+// Router-Peers which handle DC network routing via their AllowedIPs configuration.
 func (pe *PeerEngine) getClientRoutes() route.HAMap {
-	return nil // Machine Tunnel has no client routes initially
+	return nil
 }
 
 // ConnectPeer creates and opens a connection to a remote peer.
