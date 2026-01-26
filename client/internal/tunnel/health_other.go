@@ -11,13 +11,16 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// initEventLog is a no-op on non-Windows platforms.
-func initEventLog() {
+// InitEventLog is a no-op on non-Windows platforms.
+// Exported for API compatibility with health_windows.go.
+func InitEventLog() error {
 	// No-op: Windows Event Log not available
+	return nil
 }
 
-// closeEventLog is a no-op on non-Windows platforms.
-func closeEventLog() {
+// CloseEventLog is a no-op on non-Windows platforms.
+// Exported for API compatibility with health_windows.go.
+func CloseEventLog() {
 	// No-op: Windows Event Log not available
 }
 
