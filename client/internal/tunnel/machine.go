@@ -14,8 +14,11 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"github.com/netbirdio/netbird/client/iface"
 	"github.com/netbirdio/netbird/client/internal/profilemanager"
+	"github.com/netbirdio/netbird/client/ssh"
 )
 
 // MachineState represents the current state of the Machine Tunnel
@@ -69,6 +72,12 @@ type MachineTunnel struct {
 	bootstrapResult *BootstrapResult
 	resultMu        sync.RWMutex
 
+	// Current machine config (contains WG private key)
+	machineConfig *MachineConfig
+
+	// WireGuard interface
+	wgInterface *iface.WGIface
+
 	// Callbacks
 	onStateChange func(MachineState, error)
 
@@ -95,6 +104,9 @@ type MachineTunnelConfig struct {
 
 	// MTLSPort is the port for mTLS connections (default: 33074)
 	MTLSPort int
+
+	// WGPort is the WireGuard listening port (default: 51820)
+	WGPort int
 
 	// MachineCert contains machine certificate configuration for discovery
 	MachineCert MachineCertConfig
@@ -131,6 +143,7 @@ func DefaultConfig() *MachineTunnelConfig {
 		ReconnectInterval:    5 * time.Second,
 		MaxReconnectInterval: 5 * time.Minute,
 		MTLSPort:             DefaultMTLSPort,
+		WGPort:               iface.DefaultWgPort,
 		HealthCheckInterval:  30 * time.Second,
 		MachineCert: MachineCertConfig{
 			RequiredEKU:  DefaultClientAuthEKU,
@@ -300,9 +313,27 @@ func (t *MachineTunnel) toMachineConfig() (*MachineConfig, error) {
 		return nil, fmt.Errorf("parse management URL: %w", err)
 	}
 
-	// Create base profile config
+	// Generate WireGuard key if not already stored
+	// For Machine Tunnel, we generate ephemeral keys per session
+	// (unlike user tunnel which persists keys)
+	wgKey, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate WireGuard key: %w", err)
+	}
+	log.Debug("Generated new WireGuard key for Machine Tunnel")
+
+	// Generate SSH key
+	sshKeyPEM, err := ssh.GeneratePrivateKey(ssh.ED25519)
+	if err != nil {
+		return nil, fmt.Errorf("generate SSH key: %w", err)
+	}
+	log.Debug("Generated new SSH key for Machine Tunnel")
+
+	// Create base profile config with generated keys
 	baseConfig := &profilemanager.Config{
 		ManagementURL: mgmtURL,
+		PrivateKey:    wgKey.String(),
+		SSHKey:        string(sshKeyPEM),
 	}
 
 	return &MachineConfig{
@@ -330,6 +361,9 @@ func (t *MachineTunnel) connect() error {
 		return fmt.Errorf("create machine config: %w", err)
 	}
 
+	// Store machine config for later use (contains WG private key)
+	t.machineConfig = machineConfig
+
 	result, err := Bootstrap(t.ctx, machineConfig)
 	if err != nil {
 		return fmt.Errorf("bootstrap failed: %w", err)
@@ -346,8 +380,8 @@ func (t *MachineTunnel) connect() error {
 	t.resultMu.Unlock()
 
 	// Step 2: Setup WireGuard interface
-	// The bootstrap result contains the peer config with WireGuard keys and allowed IPs
-	if err := t.setupWireGuardInterface(result); err != nil {
+	// Create the actual WireGuard interface using the peer config and our private key
+	if err := t.setupWireGuardInterface(result, machineConfig); err != nil {
 		return fmt.Errorf("WireGuard setup failed: %w", err)
 	}
 
@@ -367,38 +401,58 @@ func (t *MachineTunnel) connect() error {
 }
 
 // setupWireGuardInterface creates and configures the WireGuard interface
-func (t *MachineTunnel) setupWireGuardInterface(result *BootstrapResult) error {
+func (t *MachineTunnel) setupWireGuardInterface(result *BootstrapResult, machineConfig *MachineConfig) error {
 	if result.PeerConfig == nil {
 		return fmt.Errorf("no peer config in bootstrap result")
 	}
 
+	// Get peer address from bootstrap result
+	peerAddress := result.PeerConfig.GetAddress()
+	if peerAddress == "" {
+		return fmt.Errorf("no peer address in bootstrap result")
+	}
+
+	// Get MTU from peer config, fall back to default if not set
+	mtu := uint16(iface.DefaultMTU)
+	if result.PeerConfig.GetMtu() > 0 {
+		mtu = uint16(result.PeerConfig.GetMtu())
+	}
+
 	log.WithFields(log.Fields{
 		"interface": t.config.InterfaceName,
-		"address":   result.PeerConfig.GetAddress(),
-	}).Info("Setting up WireGuard interface")
+		"address":   peerAddress,
+		"wg_port":   t.config.WGPort,
+		"mtu":       mtu,
+	}).Info("Creating WireGuard interface")
 
-	// The WireGuard interface is set up by the NetBird engine during the
-	// bootstrap process. Here we verify it was created successfully.
-	ifaceMgr := NewInterfaceManager(t.config.InterfaceName)
+	// Create WireGuard interface options
+	opts := iface.WGIFaceOpts{
+		IFaceName: t.config.InterfaceName,
+		Address:   peerAddress,
+		WGPort:    t.config.WGPort,
+		WGPrivKey: machineConfig.Config.PrivateKey,
+		MTU:       mtu,
+	}
 
-	// Find the interface to verify it exists
-	info, err := FindWireGuardInterface("")
+	// Create the WireGuard interface object
+	wgIface, err := iface.NewWGIFace(opts)
 	if err != nil {
-		return fmt.Errorf("WireGuard interface not found after bootstrap: %w", err)
+		return fmt.Errorf("create WireGuard interface object: %w", err)
 	}
 
-	if err := VerifyInterface(info); err != nil {
-		return fmt.Errorf("interface verification failed: %w", err)
+	// Actually create the interface on the system
+	if err := wgIface.Create(); err != nil {
+		return fmt.Errorf("create WireGuard interface on system: %w", err)
 	}
+
+	// Store the interface for later use
+	t.wgInterface = wgIface
 
 	log.WithFields(log.Fields{
-		"interface": info.Name,
-		"guid":      info.GUID,
-		"addresses": len(info.Addresses),
-	}).Info("WireGuard interface configured successfully")
-
-	// Store interface info in manager for health checks
-	_ = ifaceMgr // Avoid unused variable warning
+		"interface": wgIface.Name(),
+		"address":   wgIface.Address().String(),
+		"mtu":       wgIface.MTU(),
+	}).Info("WireGuard interface created successfully")
 
 	return nil
 }
@@ -542,10 +596,19 @@ func (t *MachineTunnel) Cleanup() error {
 		errs = append(errs, fmt.Errorf("firewall cleanup: %w", err))
 	}
 
-	// Remove WireGuard interface
+	// Close WireGuard interface if it exists
+	if t.wgInterface != nil {
+		if err := t.wgInterface.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("WireGuard interface close: %w", err))
+		}
+		t.wgInterface = nil
+	}
+
+	// Also try legacy interface cleanup
 	ifaceMgr := NewInterfaceManager(t.config.InterfaceName)
 	if err := ifaceMgr.Teardown(); err != nil {
-		errs = append(errs, fmt.Errorf("interface cleanup: %w", err))
+		// Only log warning, don't append as error (interface may already be closed)
+		log.WithError(err).Debug("Legacy interface teardown (may be expected)")
 	}
 
 	if len(errs) > 0 {
