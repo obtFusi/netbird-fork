@@ -475,16 +475,72 @@ machine_cert_san_must_match: true
         }
     }
 
+    Context "Phase 2: Setup-Key Revocation Validation" {
+
+        It "Should have Setup-Key removed from config" {
+            $configContent = Get-Content $script:Config.ConfigPath -Raw -ErrorAction SilentlyContinue
+            $configContent | Should -Not -Match "setup_key:" -Because "Setup-Key must be removed after mTLS transition"
+        }
+
+        It "Should be using mTLS authentication (not Setup-Key)" {
+            $configContent = Get-Content $script:Config.ConfigPath -Raw -ErrorAction SilentlyContinue
+            $configContent | Should -Match "machine_cert_enabled:\s*true" -Because "mTLS must be the active auth method"
+        }
+
+        It "Should maintain tunnel connectivity without Setup-Key" {
+            # Verify tunnel is still up after Setup-Key was removed from config
+            $interface = Get-NetAdapter -Name $script:Config.TunnelInterface -ErrorAction SilentlyContinue
+            $interface | Should -Not -BeNullOrEmpty
+            $interface.Status | Should -Be 'Up' -Because "Tunnel must stay up with mTLS (no Setup-Key needed)"
+        }
+
+        It "Should maintain DC connectivity without Setup-Key" {
+            $reachable = Test-PortConnectivity -Host $DCAddress -Port 389
+            $reachable | Should -Be $true -Because "DC must be reachable via mTLS tunnel (Setup-Key not needed)"
+        }
+
+        It "Should survive service restart without Setup-Key" {
+            # Full restart cycle to prove mTLS works independently
+            Restart-Service $script:Config.ServiceName
+            $running = Wait-ServiceRunning -ServiceName $script:Config.ServiceName -TimeoutSeconds 30
+            $running | Should -Be $true -Because "Service must restart with mTLS auth"
+
+            # Wait for tunnel
+            $tunnelUp = Wait-TunnelInterface -InterfaceName $script:Config.TunnelInterface -TimeoutSeconds $script:Config.TunnelTimeout
+            $tunnelUp | Should -Be $true -Because "Tunnel must reconnect via mTLS after restart"
+
+            # Verify DC still reachable
+            Start-Sleep -Seconds 5
+            $reachable = Test-PortConnectivity -Host $DCAddress -Port 389
+            $reachable | Should -Be $true -Because "DC must be reachable after mTLS restart"
+        }
+    }
+
     AfterAll {
         Write-Host "`n=== Test Complete ===" -ForegroundColor Cyan
-        Write-Host "REMINDER: Revoke the Setup-Key in NetBird Dashboard!" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "IMPORTANT: Manual Step Required!" -ForegroundColor Yellow
+        Write-Host "  1. Open NetBird Dashboard" -ForegroundColor Yellow
+        Write-Host "  2. Navigate to Setup Keys" -ForegroundColor Yellow
+        Write-Host "  3. Revoke the Setup-Key used for this test" -ForegroundColor Yellow
+        Write-Host "  4. Verify tunnel remains connected (proves mTLS is active)" -ForegroundColor Yellow
+        Write-Host ""
 
         # Summary
         $cert = Get-MachineCertificate -Hostname $env:COMPUTERNAME -Domain $DomainName
         if ($cert) {
-            Write-Host "`nCertificate Info:" -ForegroundColor Green
+            Write-Host "Certificate Info:" -ForegroundColor Green
             Write-Host "  Thumbprint: $($cert.Thumbprint)"
             Write-Host "  Valid Until: $($cert.NotAfter)"
+            Write-Host "  SAN: $($cert.DnsNameList.Unicode -join ', ')"
+        }
+
+        # Config status
+        $configContent = Get-Content $script:Config.ConfigPath -Raw -ErrorAction SilentlyContinue
+        if ($configContent -notmatch "setup_key:") {
+            Write-Host "`nAuth Status: mTLS (Setup-Key removed from config)" -ForegroundColor Green
+        } else {
+            Write-Host "`nAuth Status: WARNING - Setup-Key still in config!" -ForegroundColor Red
         }
     }
 }
