@@ -462,8 +462,10 @@ func (pe *PeerEngine) Close() error {
 
 	// Close all peer connections
 	for key, conn := range pe.peerConns {
-		log.WithField("peer", key[:8]).Debug("Closing peer connection")
-		conn.Close(true) // signalToRemote=true to notify remote peer
+		if conn != nil {
+			log.WithField("peer", key[:8]).Debug("Closing peer connection")
+			conn.Close(true) // signalToRemote=true to notify remote peer
+		}
 	}
 	pe.peerConns = make(map[string]*peer.Conn)
 
