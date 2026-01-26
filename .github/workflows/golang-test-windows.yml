@@ -63,10 +63,37 @@ jobs:
       - run: PsExec64 -s -w ${{ github.workspace }} C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe env -w GOMODCACHE=${{ env.cache }}
       - run: PsExec64 -s -w ${{ github.workspace }} C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe env -w GOCACHE=${{ env.modcache }}
       - run: PsExec64 -s -w ${{ github.workspace }} C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe mod tidy
-      - run: echo "files=$(go list ./... | ForEach-Object { $_ } | Where-Object { $_ -notmatch '/management' } | Where-Object { $_ -notmatch '/relay' } | Where-Object { $_ -notmatch '/signal' })" >> $env:GITHUB_ENV
+      - name: Write package list
+        run: |
+          go list ./... | Where-Object { $_ -notmatch '/management' } | Where-Object { $_ -notmatch '/relay' } | Where-Object { $_ -notmatch '/signal' } | Out-File -FilePath packages.txt -Encoding utf8
 
       - name: test
-        run: PsExec64 -s -w ${{ github.workspace }} cmd.exe /c "C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe test -tags=devcert -timeout 10m -p 1 ${{ env.files }} > test-out.txt 2>&1"
+        run: |
+          # Read packages and test in batches to avoid cmd.exe command line length limit
+          $goPath = "C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe"
+          $packages = Get-Content packages.txt | Where-Object { $_.Trim() -ne "" }
+          $batchSize = 30
+          $exitCode = 0
+
+          # Clear output file
+          "" | Out-File -FilePath test-out.txt -Encoding utf8
+
+          for ($i = 0; $i -lt $packages.Count; $i += $batchSize) {
+            $batch = $packages[$i..([Math]::Min($i + $batchSize - 1, $packages.Count - 1))]
+            $batchStr = $batch -join " "
+            Write-Host "Testing batch $([Math]::Floor($i / $batchSize) + 1) ($($batch.Count) packages)..."
+
+            $output = & PsExec64 -s -w ${{ github.workspace }} $goPath test -tags=devcert -timeout 10m -p 1 $batch 2>&1
+            $output | Out-File -FilePath test-out.txt -Encoding utf8 -Append
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Batch failed with exit code $LASTEXITCODE"
+              $exitCode = $LASTEXITCODE
+            }
+          }
+
+          exit $exitCode
+
       - name: test output
         if: ${{ always() }}
         run: Get-Content test-out.txt

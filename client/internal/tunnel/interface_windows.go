@@ -306,3 +306,46 @@ func HasRouteToNetwork(info *InterfaceInfo, network string) (bool, error) {
 		info.Name, network)
 	return true, nil
 }
+
+// InterfaceManager manages the Machine Tunnel WireGuard interface lifecycle
+type InterfaceManager struct {
+	name string
+	info *InterfaceInfo
+}
+
+// NewInterfaceManager creates a new Interface manager
+func NewInterfaceManager(name string) *InterfaceManager {
+	return &InterfaceManager{
+		name: name,
+	}
+}
+
+// Teardown removes the WireGuard interface
+func (m *InterfaceManager) Teardown() error {
+	log.WithField("interface", m.name).Info("Tearing down WireGuard interface")
+
+	// The actual interface removal is handled by the NetBird engine
+	// We just clear our reference
+	m.info = nil
+
+	return nil
+}
+
+// CheckHealth verifies the interface is up and functioning
+func (m *InterfaceManager) CheckHealth() error {
+	info, err := FindWireGuardInterface("")
+	if err != nil {
+		return fmt.Errorf("interface not found: %w", err)
+	}
+
+	if err := VerifyInterface(info); err != nil {
+		return fmt.Errorf("interface verification failed: %w", err)
+	}
+
+	return nil
+}
+
+// GetInfo returns the current interface information
+func (m *InterfaceManager) GetInfo() *InterfaceInfo {
+	return m.info
+}
