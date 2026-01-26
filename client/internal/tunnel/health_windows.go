@@ -18,18 +18,6 @@ const (
 	EventIDHealthStateFailed   uint32 = 1502
 )
 
-// initEventLog initializes the Windows Event Log (uses existing InitEventLog).
-func initEventLog() {
-	if err := InitEventLog(); err != nil {
-		log.WithError(err).Warn("Failed to open Windows Event Log, logging to stdout only")
-	}
-}
-
-// closeEventLog closes the Windows Event Log handle (uses existing CloseEventLog).
-func closeEventLog() {
-	CloseEventLog()
-}
-
 // logStateChange logs tunnel state changes to Windows Event Log.
 func (h *HealthChecker) logStateChange(oldState, newState string) {
 	msg := fmt.Sprintf("Machine Tunnel state changed: %s -> %s", oldState, newState)
