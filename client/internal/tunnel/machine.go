@@ -14,7 +14,10 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +25,11 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"github.com/netbirdio/netbird/client/iface"
+	"github.com/netbirdio/netbird/client/internal/auth"
 	"github.com/netbirdio/netbird/client/internal/profilemanager"
+	"github.com/netbirdio/netbird/client/internal/routemanager/systemops"
+	"github.com/netbirdio/netbird/client/ssh"
 	"github.com/netbirdio/netbird/client/system"
 	mgm "github.com/netbirdio/netbird/shared/management/client"
 	mgmProto "github.com/netbirdio/netbird/shared/management/proto"
@@ -80,11 +87,19 @@ type MachineTunnel struct {
 	machineConfig   *MachineConfig // Stored for management client creation
 	resultMu        sync.RWMutex
 
+	// WireGuard interface
+	wgInterface *iface.WGIface
+
 	// Management client for GetNetworkMap calls
 	mgmClient mgm.Client
 
 	// Peer Engine for Signal/Relay connections (Issue #110/111)
 	peerEngine *PeerEngine
+
+	// System route operations (Enterprise SOTA - Direct Reuse via ADR-001)
+	sysOps       *systemops.SysOps
+	activeRoutes []netip.Prefix // Tracks added routes for cleanup
+	routesMu     sync.Mutex
 
 	// Callbacks
 	onStateChange func(MachineState, error)
@@ -309,7 +324,14 @@ func (t *MachineTunnel) connectionLoop() {
 	}
 }
 
-// toMachineConfig converts MachineTunnelConfig to MachineConfig for bootstrap
+// toMachineConfig converts MachineTunnelConfig to MachineConfig for bootstrap.
+// It loads persisted keys from SecureConfig if available, otherwise generates new ones.
+//
+// Key Persistence Strategy (Enterprise SOTA):
+//   - WireGuard and SSH keys are DPAPI-encrypted with machine scope
+//   - Keys survive service restarts (critical for management server auth)
+//   - Setup key is loaded from SecureConfig or MachineTunnelConfig (fallback)
+//   - After first successful bootstrap, keys are persisted to SecureConfig
 func (t *MachineTunnel) toMachineConfig() (*MachineConfig, error) {
 	// Parse management URL
 	mgmtURL, err := url.Parse(t.config.ManagementURL)
@@ -317,19 +339,166 @@ func (t *MachineTunnel) toMachineConfig() (*MachineConfig, error) {
 		return nil, fmt.Errorf("parse management URL: %w", err)
 	}
 
+	var wgKeyStr string
+	var sshKeyStr string
+	var setupKey string
+	var needsPersist bool
+
+	// Try to load existing SecureConfig with persisted keys
+	configPath := GetConfigPath()
+	secureConfig, loadErr := LoadMachineConfigFrom(configPath)
+
+	if loadErr == nil && secureConfig != nil {
+		log.Debug("Loaded SecureConfig from disk")
+
+		// Load persisted WireGuard key if available
+		if secureConfig.HasPrivateKey() {
+			wgKeyStr, err = secureConfig.GetPrivateKey()
+			if err != nil {
+				log.Warnf("Failed to decrypt persisted WireGuard key, will generate new: %v", err)
+			} else {
+				log.Debug("Using persisted WireGuard key from SecureConfig")
+			}
+		}
+
+		// Load persisted SSH key if available
+		if secureConfig.HasSSHKey() {
+			sshKeyStr, err = secureConfig.GetSSHKey()
+			if err != nil {
+				log.Warnf("Failed to decrypt persisted SSH key, will generate new: %v", err)
+			} else {
+				log.Debug("Using persisted SSH key from SecureConfig")
+			}
+		}
+
+		// Load setup key from SecureConfig (preferred) or fallback to MachineTunnelConfig
+		if secureConfig.HasSetupKey() {
+			setupKey, err = secureConfig.GetSetupKey()
+			if err != nil {
+				log.Warnf("Failed to decrypt setup key from SecureConfig: %v", err)
+			}
+		}
+	} else {
+		log.Debugf("No SecureConfig found or load failed: %v - will create new", loadErr)
+		needsPersist = true
+	}
+
+	// Fallback: use setup key from MachineTunnelConfig if not in SecureConfig
+	if setupKey == "" && t.config.SetupKey != "" {
+		setupKey = t.config.SetupKey
+		needsPersist = true // Need to persist the encrypted setup key
+	}
+
+	// Generate WireGuard key if not loaded from SecureConfig
+	if wgKeyStr == "" {
+		log.Info("Generating new WireGuard private key (first bootstrap or key migration)")
+		wgKey, err := wgtypes.GenerateKey()
+		if err != nil {
+			return nil, fmt.Errorf("generate WireGuard private key: %w", err)
+		}
+		wgKeyStr = wgKey.String()
+		needsPersist = true
+	}
+
+	// Generate SSH key if not loaded from SecureConfig
+	if sshKeyStr == "" {
+		log.Info("Generating new SSH private key (first bootstrap or key migration)")
+		sshKeyPEM, err := ssh.GeneratePrivateKey(ssh.ED25519)
+		if err != nil {
+			return nil, fmt.Errorf("generate SSH private key: %w", err)
+		}
+		sshKeyStr = string(sshKeyPEM)
+		needsPersist = true
+	}
+
+	// Persist keys if this is first bootstrap or migration
+	if needsPersist {
+		if err := t.persistKeys(mgmtURL.String(), wgKeyStr, sshKeyStr, setupKey); err != nil {
+			// Log but don't fail - keys are in memory and bootstrap can proceed
+			// Next restart will regenerate keys (not ideal but functional)
+			log.Warnf("Failed to persist keys to SecureConfig: %v", err)
+		}
+	}
+
 	// Create base profile config
 	baseConfig := &profilemanager.Config{
 		ManagementURL: mgmtURL,
+		PrivateKey:    wgKeyStr,
+		SSHKey:        sshKeyStr,
 	}
 
+	// Build auth.MachineCertConfig from MachineTunnelConfig
+	// Merge the individual fields into auth.MachineCertConfig for certificate discovery
+	machineCertCfg := auth.MachineCertConfig{
+		Enabled:            t.config.MachineCertEnabled,
+		TemplateOID:        t.config.MachineCert.TemplateOID,
+		TemplateName:       t.config.MachineCert.TemplateName,
+		RequiredEKU:        t.config.MachineCert.RequiredEKU,
+		SANMustMatch:       t.config.MachineCert.SANMustMatch,
+		ThumbprintOverride: t.config.MachineCertThumbprint,
+	}
+
+	// Get hostname for SAN matching
+	hostname, _ := os.Hostname()
+
 	return &MachineConfig{
-		Config:                baseConfig,
-		MachineCertEnabled:    t.config.MachineCertEnabled,
-		MachineCertThumbprint: t.config.MachineCertThumbprint,
-		SetupKey:              t.config.SetupKey,
-		MTLSPort:              t.config.MTLSPort,
-		DCRoutes:              t.config.DCRoutes,
+		Config:      baseConfig,
+		MachineCert: machineCertCfg,
+		SetupKey:    setupKey,
+		MTLSPort:    t.config.MTLSPort,
+		DCRoutes:    t.config.DCRoutes,
+		Hostname:    hostname,
 	}, nil
+}
+
+// persistKeys saves the WireGuard, SSH, and setup keys to SecureConfig with DPAPI encryption.
+// This ensures keys survive service restarts.
+func (t *MachineTunnel) persistKeys(managementURL, wgKey, sshKey, setupKey string) error {
+	configPath := GetConfigPath()
+
+	// Load existing config or create new one
+	secureConfig, err := LoadMachineConfigFrom(configPath)
+	if err != nil {
+		// Create new SecureConfig
+		secureConfig = &SecureConfig{
+			ManagementURL:      managementURL,
+			MachineCertEnabled: t.config.MachineCertEnabled,
+		}
+	}
+
+	// Update management URL if changed
+	secureConfig.ManagementURL = managementURL
+	secureConfig.MachineCertEnabled = t.config.MachineCertEnabled
+	secureConfig.MachineCertThumbprint = t.config.MachineCertThumbprint
+
+	// Encrypt and store WireGuard key
+	if wgKey != "" {
+		if err := secureConfig.SetPrivateKey(wgKey); err != nil {
+			return fmt.Errorf("encrypt WireGuard key: %w", err)
+		}
+	}
+
+	// Encrypt and store SSH key
+	if sshKey != "" {
+		if err := secureConfig.SetSSHKey(sshKey); err != nil {
+			return fmt.Errorf("encrypt SSH key: %w", err)
+		}
+	}
+
+	// Encrypt and store setup key (if not already stored)
+	if setupKey != "" && !secureConfig.HasSetupKey() {
+		if err := secureConfig.SetSetupKey(setupKey); err != nil {
+			return fmt.Errorf("encrypt setup key: %w", err)
+		}
+	}
+
+	// Save to disk with hardened ACLs
+	if err := secureConfig.SaveTo(configPath); err != nil {
+		return fmt.Errorf("save SecureConfig: %w", err)
+	}
+
+	log.WithField("path", configPath).Info("Persisted encrypted keys to SecureConfig")
+	return nil
 }
 
 // connect establishes the Machine Tunnel connection
@@ -366,7 +535,7 @@ func (t *MachineTunnel) connect() error {
 
 	// Step 2: Setup WireGuard interface
 	// The bootstrap result contains the peer config with WireGuard keys and allowed IPs
-	if err := t.setupWireGuardInterface(result); err != nil {
+	if err := t.setupWireGuardInterface(result, machineConfig); err != nil {
 		return fmt.Errorf("WireGuard setup failed: %w", err)
 	}
 
@@ -391,38 +560,69 @@ func (t *MachineTunnel) connect() error {
 }
 
 // setupWireGuardInterface creates and configures the WireGuard interface
-func (t *MachineTunnel) setupWireGuardInterface(result *BootstrapResult) error {
+func (t *MachineTunnel) setupWireGuardInterface(result *BootstrapResult, machineConfig *MachineConfig) error {
 	if result.PeerConfig == nil {
 		return fmt.Errorf("no peer config in bootstrap result")
 	}
 
+	address := result.PeerConfig.GetAddress()
 	log.WithFields(log.Fields{
 		"interface": t.config.InterfaceName,
-		"address":   result.PeerConfig.GetAddress(),
-	}).Info("Setting up WireGuard interface")
+		"address":   address,
+	}).Info("Creating WireGuard interface")
 
-	// The WireGuard interface is set up by the NetBird engine during the
-	// bootstrap process. Here we verify it was created successfully.
-	ifaceMgr := NewInterfaceManager(t.config.InterfaceName)
+	// Use defaults if not specified
+	mtu := uint16(iface.DefaultMTU)
+	wgPort := iface.DefaultWgPort
 
-	// Find the interface to verify it exists
-	info, err := FindWireGuardInterface("")
+	// Create WireGuard interface options
+	// Note: TransportNet and FilterFn are optional for basic operation
+	opts := iface.WGIFaceOpts{
+		IFaceName: t.config.InterfaceName,
+		Address:   address,
+		WGPort:    wgPort,
+		WGPrivKey: machineConfig.Config.PrivateKey,
+		MTU:       mtu,
+		// TransportNet: nil - uses default
+		// FilterFn: nil - no filtering
+		// DisableDNS: false - allow DNS
+	}
+
+	// Create WireGuard interface instance
+	wgIface, err := iface.NewWGIFace(opts)
 	if err != nil {
-		return fmt.Errorf("WireGuard interface not found after bootstrap: %w", err)
+		return fmt.Errorf("failed to create WireGuard interface: %w", err)
 	}
 
-	if err := VerifyInterface(info); err != nil {
-		return fmt.Errorf("interface verification failed: %w", err)
+	// Create the actual TUN device
+	log.Info(">>> Calling wgIface.Create()...")
+	if err := wgIface.Create(); err != nil {
+		return fmt.Errorf("failed to create TUN device: %w", err)
 	}
+	log.Info(">>> wgIface.Create() completed successfully")
+
+	// Bring the interface up
+	log.Info(">>> Calling wgIface.Up()...")
+	_, err = wgIface.Up()
+	if err != nil {
+		log.WithError(err).Error(">>> wgIface.Up() failed")
+		return fmt.Errorf("failed to bring up WireGuard interface: %w", err)
+	}
+	log.Info(">>> wgIface.Up() completed successfully")
+
+	// Store the interface for later use (peer connections, cleanup)
+	t.wgInterface = wgIface
+
+	// Initialize SysOps for system route management (Enterprise SOTA - ADR-001)
+	// Uses NetBird's native route handling via Windows IP Helper API
+	t.sysOps = systemops.New(wgIface, nil)
+	log.Debug("SysOps initialized for system route management")
 
 	log.WithFields(log.Fields{
-		"interface": info.Name,
-		"guid":      info.GUID,
-		"addresses": len(info.Addresses),
-	}).Info("WireGuard interface configured successfully")
-
-	// Store interface info in manager for health checks
-	_ = ifaceMgr // Avoid unused variable warning
+		"interface": wgIface.Name(),
+		"address":   wgIface.Address().String(),
+		"mtu":       wgIface.MTU(),
+	}).Info("WireGuard interface created successfully")
 
 	return nil
 }
@@ -508,12 +708,15 @@ func (t *MachineTunnel) configureFirewall(result *BootstrapResult) error {
 func (t *MachineTunnel) initializePeerEngine(result *BootstrapResult, machineConfig *MachineConfig) error {
 	log.Info("Initializing PeerEngine for Signal/Relay connections")
 
-	// Generate WireGuard key for peer connections FIRST
-	// This key is used for both management client authentication and PeerEngine
-	wgKey, err := wgtypes.GenerateKey()
+	// Use the EXISTING WireGuard key from Bootstrap (stored in config)
+	// CRITICAL: Must use same key that was registered during Bootstrap!
+	// Using a new key would cause "failed handling request" from management server.
+	// Reference: bootstrap.go:409 uses same pattern
+	wgKey, err := wgtypes.ParseKey(machineConfig.Config.PrivateKey)
 	if err != nil {
-		return fmt.Errorf("generate WireGuard key: %w", err)
+		return fmt.Errorf("parse WireGuard key from config: %w", err)
 	}
+	log.WithField("wg_pubkey", wgKey.PublicKey().String()[:8]+"...").Debug("Using existing WireGuard key from config")
 
 	// Create management client for GetNetworkMap calls
 	mgmClient, err := t.createMgmClient(machineConfig, wgKey)
@@ -538,6 +741,20 @@ func (t *MachineTunnel) initializePeerEngine(result *BootstrapResult, machineCon
 
 	log.WithField("peer_count", len(remotePeers)).Info("Got remote peers from NetworkMap")
 
+	// Parse routes from NetworkMap to build peerKey -> []networks map
+	// Routes define which networks should be routed through which peer (router-peers)
+	// Reference: NetBird engine.go uses routeManager for this, we do a simplified version
+	peerRouteMap := buildPeerRouteMap(networkMap.GetRoutes())
+	if len(peerRouteMap) > 0 {
+		log.WithField("routing_peers", len(peerRouteMap)).Info("Parsed routes from NetworkMap")
+		for peer, networks := range peerRouteMap {
+			log.WithFields(log.Fields{
+				"peer":     peer[:8] + "...",
+				"networks": networks,
+			}).Debug("Route networks for peer")
+		}
+	}
+
 	// Build PeerEngineConfig from BootstrapResult
 	peerEngineCfg, err := t.buildPeerEngineConfig(result, wgKey)
 	if err != nil {
@@ -557,7 +774,8 @@ func (t *MachineTunnel) initializePeerEngine(result *BootstrapResult, machineCon
 	}
 
 	// Connect to remote peers (parallel with limit)
-	if err := t.connectToRemotePeers(remotePeers); err != nil {
+	// Pass peerRouteMap to merge route networks into peer AllowedIPs
+	if err := t.connectToRemotePeers(remotePeers, peerRouteMap); err != nil {
 		log.WithError(err).Warn("Some peer connections failed")
 		// Not fatal - some peers might still work
 	}
@@ -585,7 +803,11 @@ func (t *MachineTunnel) createMgmClient(machineConfig *MachineConfig, wgKey wgty
 }
 
 // buildPeerEngineConfig creates a PeerEngineConfig from BootstrapResult and NetbirdConfig.
+// CRITICAL: t.wgInterface MUST be set before calling this function!
 func (t *MachineTunnel) buildPeerEngineConfig(result *BootstrapResult, wgKey wgtypes.Key) (PeerEngineConfig, error) {
+	if t.wgInterface == nil {
+		return PeerEngineConfig{}, fmt.Errorf("WireGuard interface not set - call setupWireGuardInterface first")
+	}
 	netbirdCfg := result.NetbirdConfig
 	if netbirdCfg == nil {
 		return PeerEngineConfig{}, fmt.Errorf("no NetbirdConfig in bootstrap result")
@@ -625,8 +847,8 @@ func (t *MachineTunnel) buildPeerEngineConfig(result *BootstrapResult, wgKey wgt
 		DisableIPv6Discovery: false,
 		NATExternalIPs:       []string{},
 
-		// WireGuard config - will be populated per-peer
-		WgInterface:  nil, // Set when connecting peers
+		// WireGuard config - use the interface created in setupWireGuardInterface
+		WgInterface:  t.wgInterface,
 		WgPort:       51820,
 		PreSharedKey: nil,
 
@@ -639,7 +861,9 @@ func (t *MachineTunnel) buildPeerEngineConfig(result *BootstrapResult, wgKey wgt
 }
 
 // connectToRemotePeers connects to all remote peers in parallel with a concurrency limit.
-func (t *MachineTunnel) connectToRemotePeers(remotePeers []*mgmProto.RemotePeerConfig) error {
+// peerRouteMap contains peerKey -> []networks for route-based AllowedIPs extension.
+// Enterprise SOTA: Routes from NetworkMap are merged into peer AllowedIPs.
+func (t *MachineTunnel) connectToRemotePeers(remotePeers []*mgmProto.RemotePeerConfig, peerRouteMap map[string][]string) error {
 	if t.peerEngine == nil {
 		return fmt.Errorf("peer engine not initialized")
 	}
@@ -647,6 +871,10 @@ func (t *MachineTunnel) connectToRemotePeers(remotePeers []*mgmProto.RemotePeerC
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, DefaultMaxConcurrentPeers)
 	var connErrors atomic.Int32
+
+	// Collect route networks for Windows system route creation
+	var routeNetworksMu sync.Mutex
+	routeNetworks := make([]string, 0)
 
 	for _, rp := range remotePeers {
 		wg.Add(1)
@@ -658,19 +886,39 @@ func (t *MachineTunnel) connectToRemotePeers(remotePeers []*mgmProto.RemotePeerC
 			peerKey := peer.GetWgPubKey()
 			allowedIPs := peer.GetAllowedIps()
 
-			log.WithField("peer", peerKey[:8]).Debug("Connecting to peer")
+			// Merge route networks into AllowedIPs if this peer is a routing peer
+			if routeNets, hasRoutes := peerRouteMap[peerKey]; hasRoutes {
+				log.WithFields(log.Fields{
+					"peer":           peerKey[:8] + "...",
+					"base_allowed":   allowedIPs,
+					"route_networks": routeNets,
+				}).Info("Merging route networks into peer AllowedIPs")
+
+				// Merge: original AllowedIPs + route networks (deduplicated)
+				allowedIPs = mergeAllowedIPs(allowedIPs, routeNets)
+
+				// Track route networks for Windows system routes
+				routeNetworksMu.Lock()
+				routeNetworks = append(routeNetworks, routeNets...)
+				routeNetworksMu.Unlock()
+			}
+
+			log.WithFields(log.Fields{
+				"peer":       peerKey[:8] + "...",
+				"allowedIPs": allowedIPs,
+			}).Debug("Connecting to peer with AllowedIPs")
 
 			_, err := t.peerEngine.ConnectPeer(t.ctx, peerKey, allowedIPs)
 			if err != nil {
 				log.WithFields(log.Fields{
-					"peer":  peerKey[:8],
+					"peer":  peerKey[:8] + "...",
 					"error": err,
 				}).Warn("Failed to connect to peer")
 				connErrors.Add(1)
 				return
 			}
 
-			log.WithField("peer", peerKey[:8]).Info("Connected to peer")
+			log.WithField("peer", peerKey[:8]+"...").Info("Connected to peer")
 		}(rp)
 	}
 
@@ -686,6 +934,171 @@ func (t *MachineTunnel) connectToRemotePeers(remotePeers []*mgmProto.RemotePeerC
 			"failed":    failedCount,
 			"succeeded": int32(len(remotePeers)) - failedCount,
 		}).Warn("Some peer connections failed")
+	}
+
+	// Add Windows system routes for route networks
+	// This ensures traffic to these networks goes through the WireGuard interface
+	if len(routeNetworks) > 0 {
+		if err := t.addWindowsSystemRoutes(routeNetworks); err != nil {
+			log.WithError(err).Warn("Failed to add some Windows system routes")
+			// Not fatal - peer connection still works, just routing might be incomplete
+		}
+	}
+
+	return nil
+}
+
+// mergeAllowedIPs merges base AllowedIPs with route networks, removing duplicates.
+func mergeAllowedIPs(base []string, routes []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(base)+len(routes))
+
+	// Add base AllowedIPs
+	for _, ip := range base {
+		if !seen[ip] {
+			seen[ip] = true
+			result = append(result, ip)
+		}
+	}
+
+	// Add route networks
+	for _, ip := range routes {
+		if !seen[ip] {
+			seen[ip] = true
+			result = append(result, ip)
+		}
+	}
+
+	return result
+}
+
+// addWindowsSystemRoutes adds Windows system routes for the given networks.
+// Routes are added via the WireGuard interface using Windows IP Helper API.
+// This is Enterprise SOTA - Direct Reuse of NetBird's systemops (ADR-001).
+//
+// Why system routes are needed:
+// - WireGuard AllowedIPs control crypto-routing (which peer handles which IPs)
+// - Windows also needs SYSTEM routes to direct traffic to the WireGuard TUN interface
+// - Without system routes, traffic to DC networks goes to physical gateway instead of tunnel
+func (t *MachineTunnel) addWindowsSystemRoutes(networks []string) error {
+	if t.wgInterface == nil {
+		return fmt.Errorf("WireGuard interface not available")
+	}
+	if t.sysOps == nil {
+		return fmt.Errorf("SysOps not initialized")
+	}
+
+	interfaceName := t.wgInterface.Name()
+
+	// Get the *net.Interface for the WireGuard TUN device
+	wgNetInterface, err := net.InterfaceByName(interfaceName)
+	if err != nil {
+		return fmt.Errorf("get WireGuard interface by name %q: %w", interfaceName, err)
+	}
+
+	log.WithFields(log.Fields{
+		"interface":       interfaceName,
+		"interface_index": wgNetInterface.Index,
+		"networks":        networks,
+	}).Info("Adding Windows system routes via systemops (Enterprise SOTA)")
+
+	var errs []error
+	for _, network := range networks {
+		prefix, err := netip.ParsePrefix(network)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"network": network,
+				"error":   err,
+			}).Warn("Invalid network CIDR, skipping route")
+			continue
+		}
+
+		// Add system route via Windows IP Helper API (CreateIpForwardEntry2)
+		// This directs traffic matching the prefix to the WireGuard TUN interface
+		if err := t.sysOps.AddVPNRoute(prefix, wgNetInterface); err != nil {
+			log.WithFields(log.Fields{
+				"network":   prefix.String(),
+				"interface": interfaceName,
+				"error":     err,
+			}).Error("Failed to add system route")
+			errs = append(errs, fmt.Errorf("add route %s: %w", prefix, err))
+			continue
+		}
+
+		// Track successfully added route for cleanup
+		t.routesMu.Lock()
+		t.activeRoutes = append(t.activeRoutes, prefix)
+		t.routesMu.Unlock()
+
+		log.WithFields(log.Fields{
+			"network":         prefix.String(),
+			"interface":       interfaceName,
+			"interface_index": wgNetInterface.Index,
+		}).Info("System route added successfully")
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("route errors: %v", errs)
+	}
+
+	return nil
+}
+
+// removeWindowsSystemRoutes removes all system routes that were added.
+// Called during Cleanup to ensure clean state.
+func (t *MachineTunnel) removeWindowsSystemRoutes() error {
+	if t.wgInterface == nil {
+		log.Debug("No WireGuard interface, skipping route cleanup")
+		return nil
+	}
+	if t.sysOps == nil {
+		log.Debug("No SysOps, skipping route cleanup")
+		return nil
+	}
+
+	t.routesMu.Lock()
+	routes := make([]netip.Prefix, len(t.activeRoutes))
+	copy(routes, t.activeRoutes)
+	t.activeRoutes = nil
+	t.routesMu.Unlock()
+
+	if len(routes) == 0 {
+		log.Debug("No active routes to remove")
+		return nil
+	}
+
+	interfaceName := t.wgInterface.Name()
+	wgNetInterface, err := net.InterfaceByName(interfaceName)
+	if err != nil {
+		// Interface might already be gone - that's okay, routes are removed with it
+		log.WithFields(log.Fields{
+			"interface": interfaceName,
+			"error":     err,
+		}).Debug("Could not get interface for route cleanup, routes may already be removed")
+		return nil
+	}
+
+	log.WithFields(log.Fields{
+		"interface": interfaceName,
+		"routes":    len(routes),
+	}).Info("Removing Windows system routes")
+
+	var errs []error
+	for _, prefix := range routes {
+		if err := t.sysOps.RemoveVPNRoute(prefix, wgNetInterface); err != nil {
+			log.WithFields(log.Fields{
+				"network":   prefix.String(),
+				"interface": interfaceName,
+				"error":     err,
+			}).Warn("Failed to remove system route")
+			errs = append(errs, fmt.Errorf("remove route %s: %w", prefix, err))
+			continue
+		}
+		log.WithField("network", prefix.String()).Debug("System route removed")
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("route cleanup errors: %v", errs)
 	}
 
 	return nil
@@ -834,7 +1247,20 @@ func (t *MachineTunnel) Cleanup() error {
 		errs = append(errs, fmt.Errorf("firewall cleanup: %w", err))
 	}
 
-	// Remove WireGuard interface
+	// Remove system routes (before closing WireGuard interface)
+	if err := t.removeWindowsSystemRoutes(); err != nil {
+		errs = append(errs, fmt.Errorf("route cleanup: %w", err))
+	}
+
+	// Close WireGuard interface (the iface.WGIface we created)
+	if t.wgInterface != nil {
+		if err := t.wgInterface.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("WireGuard interface close: %w", err))
+		}
+		t.wgInterface = nil
+	}
+
+	// Remove WireGuard interface (legacy InterfaceManager, for any remaining cleanup)
 	ifaceMgr := NewInterfaceManager(t.config.InterfaceName)
 	if err := ifaceMgr.Teardown(); err != nil {
 		errs = append(errs, fmt.Errorf("interface cleanup: %w", err))
@@ -846,4 +1272,67 @@ func (t *MachineTunnel) Cleanup() error {
 
 	log.Info("Machine Tunnel cleanup complete")
 	return nil
+}
+
+// buildPeerRouteMap parses routes from NetworkMap and builds a map of peer -> []networks.
+// This is used to add route networks to peer AllowedIPs when connecting.
+// Enterprise SOTA: Proper route handling like standard NetBird engine.
+// Reference: engine.go:1093 (toRoutes), routemanager/client/client.go:285 (addAllowedIPs)
+func buildPeerRouteMap(routes []*mgmProto.Route) map[string][]string {
+	if len(routes) == 0 {
+		return nil
+	}
+
+	peerRouteMap := make(map[string][]string)
+
+	for _, r := range routes {
+		if r == nil {
+			continue
+		}
+
+		peerKey := r.GetPeer()
+		network := r.GetNetwork()
+
+		// Skip invalid entries
+		if peerKey == "" || network == "" {
+			continue
+		}
+
+		// Skip domain-based routes (DNS forwarding) - we only handle network routes
+		if len(r.GetDomains()) > 0 {
+			log.WithField("domains", r.GetDomains()).Debug("Skipping domain-based route")
+			continue
+		}
+
+		// Skip if SkipAutoApply is set (admin explicitly disabled auto-routing)
+		if r.GetSkipAutoApply() {
+			log.WithFields(log.Fields{
+				"network": network,
+				"peer":    peerKey[:8] + "...",
+			}).Debug("Skipping route with SkipAutoApply=true")
+			continue
+		}
+
+		// Validate CIDR format
+		_, err := netip.ParsePrefix(network)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"network": network,
+				"error":   err,
+			}).Warn("Invalid network CIDR in route, skipping")
+			continue
+		}
+
+		// Add to peer's route list
+		peerRouteMap[peerKey] = append(peerRouteMap[peerKey], network)
+
+		log.WithFields(log.Fields{
+			"peer":       peerKey[:8] + "...",
+			"network":    network,
+			"masquerade": r.GetMasquerade(),
+			"keep_route": r.GetKeepRoute(),
+		}).Debug("Added route to peer map")
+	}
+
+	return peerRouteMap
 }

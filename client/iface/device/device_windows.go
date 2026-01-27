@@ -3,6 +3,7 @@ package device
 import (
 	"fmt"
 	"net/netip"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/windows"
@@ -68,10 +69,20 @@ func (t *TunDevice) Create() (WGConfigurer, error) {
 	t.filteredDevice = newDeviceFilter(tunDevice)
 
 	// We need to create a wireguard-go device and listen to configuration requests
+	// Use a custom logger that routes wireguard-go logs to logrus (for Windows service)
+	// DEBUG Issue #113: Using Infof to ensure logs are visible with --log-level info
+	wgLogger := &device.Logger{
+		Verbosef: func(format string, args ...any) {
+			log.Infof("[wg] "+format, args...)
+		},
+		Errorf: func(format string, args ...any) {
+			log.Errorf("[wg] "+format, args...)
+		},
+	}
 	t.device = device.NewDevice(
 		t.filteredDevice,
 		t.iceBind,
-		device.NewLogger(wgLogLevel(), "[netbird] "),
+		wgLogger,
 	)
 
 	luid := winipcfg.LUID(t.nativeTunDevice.LUID())
@@ -106,17 +117,43 @@ func (t *TunDevice) Create() (WGConfigurer, error) {
 }
 
 func (t *TunDevice) Up() (*udpmux.UniversalUDPMuxDefault, error) {
-	err := t.device.Up()
-	if err != nil {
-		return nil, err
+	log.Infof(">>> TunDevice.Up() starting for %s", t.name)
+	log.Info(">>> Calling device.Up()...")
+
+	// Use a channel to detect if device.Up() blocks
+	done := make(chan error, 1)
+	go func() {
+		done <- t.device.Up()
+	}()
+
+	// Check periodically if still waiting
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				log.WithError(err).Error(">>> device.Up() failed")
+				return nil, err
+			}
+			log.Info(">>> device.Up() completed successfully")
+			goto afterDeviceUp
+		case <-ticker.C:
+			log.Warn(">>> Still waiting for device.Up()...")
+		}
 	}
+afterDeviceUp:
+	log.Info(">>> device.Up() completed, getting ICE mux...")
 
 	udpMux, err := t.iceBind.GetICEMux()
 	if err != nil {
+		log.WithError(err).Error(">>> GetICEMux() failed")
 		return nil, err
 	}
+	log.Info(">>> GetICEMux() completed successfully")
 	t.udpMux = udpMux
-	log.Debugf("device is ready to use: %s", t.name)
+	log.Infof(">>> device is ready to use: %s", t.name)
 	return udpMux, nil
 }
 

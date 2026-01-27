@@ -28,9 +28,14 @@ type receiverCreator struct {
 }
 
 func (rc receiverCreator) CreateReceiverFn(pc wgConn.BatchReader, conn *net.UDPConn, rxOffload bool, msgPool *sync.Pool) wgConn.ReceiveFunc {
+	log.Infof(">>> receiverCreator.CreateReceiverFn called, pc type=%T, rxOffload=%v", pc, rxOffload)
 	if ipv4PC, ok := pc.(*ipv4.PacketConn); ok {
-		return rc.iceBind.createIPv4ReceiverFn(ipv4PC, conn, rxOffload, msgPool)
+		log.Info(">>> receiverCreator.CreateReceiverFn: IPv4 PacketConn detected, calling createIPv4ReceiverFn...")
+		result := rc.iceBind.createIPv4ReceiverFn(ipv4PC, conn, rxOffload, msgPool)
+		log.Info(">>> receiverCreator.CreateReceiverFn: createIPv4ReceiverFn returned")
+		return result
 	}
+	log.Info(">>> receiverCreator.CreateReceiverFn: NOT IPv4 PacketConn, returning IPv6 stub receiver")
 	// IPv6 is currently not supported in the udpmux, this is a stub for compatibility with the
 	// wireguard-go ReceiverCreator interface which is called for both IPv4 and IPv6.
 	return func(bufs [][]byte, sizes []int, eps []wgConn.Endpoint) (n int, err error) {
@@ -98,15 +103,21 @@ func NewICEBind(transportNet transport.Net, filterFn udpmux.FilterFn, address wg
 }
 
 func (s *ICEBind) Open(uport uint16) ([]wgConn.ReceiveFunc, uint16, error) {
+	log.Infof(">>> ICEBind.Open(%d) starting", uport)
 	s.closed = false
+	log.Info(">>> ICEBind.Open: acquiring closedChanMu.Lock()...")
 	s.closedChanMu.Lock()
+	log.Info(">>> ICEBind.Open: closedChanMu.Lock() acquired, making channel...")
 	s.closedChan = make(chan struct{})
 	s.closedChanMu.Unlock()
+	log.Info(">>> ICEBind.Open: calling StdNetBind.Open()...")
 	fns, port, err := s.StdNetBind.Open(uport)
+	log.Infof(">>> ICEBind.Open: StdNetBind.Open() returned fns=%d, port=%d, err=%v", len(fns), port, err)
 	if err != nil {
 		return nil, 0, err
 	}
 	fns = append(fns, s.receiveRelayed)
+	log.Infof(">>> ICEBind.Open: returning fns=%d, port=%d", len(fns), port)
 	return fns, port, nil
 }
 
@@ -176,8 +187,10 @@ func (b *ICEBind) Send(bufs [][]byte, ep wgConn.Endpoint) error {
 }
 
 func (s *ICEBind) createIPv4ReceiverFn(pc *ipv4.PacketConn, conn *net.UDPConn, rxOffload bool, msgsPool *sync.Pool) wgConn.ReceiveFunc {
+	log.Info(">>> createIPv4ReceiverFn: starting, acquiring muUDPMux.Lock()...")
 	s.muUDPMux.Lock()
 	defer s.muUDPMux.Unlock()
+	log.Info(">>> createIPv4ReceiverFn: muUDPMux acquired, creating UDPMux...")
 
 	s.udpMux = udpmux.NewUniversalUDPMuxDefault(
 		udpmux.UniversalUDPMuxParams{
@@ -188,6 +201,7 @@ func (s *ICEBind) createIPv4ReceiverFn(pc *ipv4.PacketConn, conn *net.UDPConn, r
 			MTU:       s.mtu,
 		},
 	)
+	log.Info(">>> createIPv4ReceiverFn: UDPMux created, returning receiver function")
 	return func(bufs [][]byte, sizes []int, eps []wgConn.Endpoint) (n int, err error) {
 		msgs := getMessages(msgsPool)
 		for i := range bufs {

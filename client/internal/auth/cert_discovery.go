@@ -15,9 +15,60 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-
-	"github.com/netbirdio/netbird/client/internal/tunnel"
 )
+
+// DefaultClientAuthEKU is the standard Client Authentication EKU
+const DefaultClientAuthEKU = "1.3.6.1.5.5.7.3.2"
+
+// ADCSTemplateOID is the Microsoft AD CS Certificate Template extension OID
+const ADCSTemplateOID = "1.3.6.1.4.1.311.21.7"
+
+// MachineCertConfig holds configuration for machine certificate authentication
+// This is a copy of MachineCertConfig to avoid import cycles.
+type MachineCertConfig struct {
+	// Enabled activates machine certificate authentication
+	Enabled bool `yaml:"machine_cert_enabled" json:"machineCertEnabled"`
+
+	// TemplateOID is the AD CS template OID to match (1.3.6.1.4.1.311.21.7)
+	TemplateOID string `yaml:"machine_cert_template_oid,omitempty" json:"machineCertTemplateOid,omitempty"`
+
+	// TemplateName is the AD CS template name to match
+	TemplateName string `yaml:"machine_cert_template_name,omitempty" json:"machineCertTemplateName,omitempty"`
+
+	// RequiredEKU specifies the required Extended Key Usage OID
+	RequiredEKU string `yaml:"machine_cert_required_eku,omitempty" json:"machineCertRequiredEku,omitempty"`
+
+	// SANMustMatch if true, requires SAN DNSName to contain the machine hostname
+	SANMustMatch bool `yaml:"machine_cert_san_must_match,omitempty" json:"machineCertSanMustMatch,omitempty"`
+
+	// ThumbprintOverride allows specifying an exact certificate thumbprint
+	ThumbprintOverride string `yaml:"machine_cert_thumbprint,omitempty" json:"machineCertThumbprint,omitempty"`
+}
+
+// MachineIdentity represents the identity extracted from a machine certificate
+// This is a copy of MachineIdentity to avoid import cycles.
+type MachineIdentity struct {
+	// Hostname is the machine hostname from SAN DNSName
+	Hostname string
+
+	// Domain is the AD domain from SAN DNSName (e.g., "corp.local")
+	Domain string
+
+	// FQDN is the full hostname.domain (e.g., "win10-pc.corp.local")
+	FQDN string
+
+	// CertThumbprint is the SHA-1 thumbprint of the certificate
+	CertThumbprint string
+
+	// IssuerFingerprint is the SHA-256 fingerprint of the issuing CA
+	IssuerFingerprint string
+
+	// TemplateOID is the AD CS template OID if present
+	TemplateOID string
+
+	// TemplateName is the AD CS template name if present
+	TemplateName string
+}
 
 // CertSource indicates where the certificate was loaded from
 type CertSource string
@@ -50,13 +101,13 @@ type LoadedCertificate struct {
 	TemplateName string
 
 	// Identity is the parsed machine identity from the certificate
-	Identity *tunnel.MachineIdentity
+	Identity *MachineIdentity
 }
 
 // CertDiscoveryConfig configures certificate discovery
 type CertDiscoveryConfig struct {
 	// MachineCert contains the machine certificate configuration
-	MachineCert tunnel.MachineCertConfig
+	MachineCert MachineCertConfig
 
 	// FallbackCertPath is the path to a PEM certificate file (fallback)
 	FallbackCertPath string
@@ -282,7 +333,7 @@ func validateCertificate(cert *LoadedCertificate, config *CertDiscoveryConfig) e
 func hasEKU(cert *x509.Certificate, ekuOID string) bool {
 	// Map common EKU names to OIDs
 	ekuMap := map[string]x509.ExtKeyUsage{
-		tunnel.DefaultClientAuthEKU: x509.ExtKeyUsageClientAuth,
+		DefaultClientAuthEKU: x509.ExtKeyUsageClientAuth,
 		"1.3.6.1.5.5.7.3.1":         x509.ExtKeyUsageServerAuth,
 	}
 

@@ -295,7 +295,9 @@ type configYAML struct {
 	DCRoutes []string `yaml:"dc_routes,omitempty"`
 }
 
-// loadConfig loads the machine tunnel configuration from YAML file
+// loadConfig loads the machine tunnel configuration from YAML file.
+// It supports both plaintext setup_key (initial deployment) and
+// encrypted_setup_key (after first bootstrap - DPAPI encrypted).
 func loadConfig() (*tunnel.MachineTunnelConfig, error) {
 	// Start with defaults
 	config := tunnel.DefaultConfig()
@@ -330,6 +332,21 @@ func loadConfig() (*tunnel.MachineTunnelConfig, error) {
 	config.SetupKey = yamlConfig.SetupKey
 	config.MachineCertEnabled = yamlConfig.MachineCertEnabled
 	config.MachineCertThumbprint = yamlConfig.MachineCertThumbprint
+
+	// If no plaintext setup_key, try to load encrypted setup key from SecureConfig.
+	// This happens after the first bootstrap run, when the key has been encrypted.
+	if config.SetupKey == "" && !config.MachineCertEnabled {
+		secureConfig, err := tunnel.LoadMachineConfigFrom(configPath)
+		if err == nil && secureConfig.HasSetupKey() {
+			decryptedKey, err := secureConfig.GetSetupKey()
+			if err != nil {
+				log.Warnf("Failed to decrypt setup key: %v", err)
+			} else if decryptedKey != "" {
+				config.SetupKey = decryptedKey
+				log.Debug("Loaded encrypted setup key from SecureConfig")
+			}
+		}
+	}
 
 	if yamlConfig.MTLSPort > 0 {
 		config.MTLSPort = yamlConfig.MTLSPort
