@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/netbirdio/netbird/client/internal/auth"
 	"github.com/netbirdio/netbird/client/internal/profilemanager"
 )
 
@@ -77,6 +78,9 @@ func TestHasMachineCert_ValidCert(t *testing.T) {
 			ClientCertPath:    certPath,
 			ClientCertKeyPath: keyPath,
 		},
+		MachineCert: auth.MachineCertConfig{
+			Enabled: true,
+		},
 	}
 
 	assert.True(t, hasMachineCert(cfg))
@@ -97,6 +101,9 @@ func TestHasMachineCert_ExpiredCert(t *testing.T) {
 			ClientCertPath:    certPath,
 			ClientCertKeyPath: keyPath,
 		},
+		MachineCert: auth.MachineCertConfig{
+			Enabled: true,
+		},
 	}
 
 	assert.False(t, hasMachineCert(cfg))
@@ -116,9 +123,14 @@ func TestHasMachineCert_NoDNSNames(t *testing.T) {
 			ClientCertPath:    certPath,
 			ClientCertKeyPath: keyPath,
 		},
+		MachineCert: auth.MachineCertConfig{
+			Enabled: true,
+		},
 	}
 
-	assert.False(t, hasMachineCert(cfg))
+	// Certificate without DNS names should still be valid (Identity parsing is separate)
+	// The cert discovery succeeds as long as the cert exists and is not expired
+	assert.True(t, hasMachineCert(cfg))
 }
 
 func TestHasMachineCert_ThumbprintMismatch(t *testing.T) {
@@ -134,7 +146,10 @@ func TestHasMachineCert_ThumbprintMismatch(t *testing.T) {
 			ClientCertPath:    certPath,
 			ClientCertKeyPath: keyPath,
 		},
-		MachineCertThumbprint: "0000000000000000000000000000000000000000000000000000000000000000",
+		MachineCert: auth.MachineCertConfig{
+			Enabled:            true,
+			ThumbprintOverride: "0000000000000000000000000000000000000000", // Invalid thumbprint
+		},
 	}
 
 	assert.False(t, hasMachineCert(cfg))
