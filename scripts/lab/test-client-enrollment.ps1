@@ -102,74 +102,77 @@ $certFile = "$env:TEMP\machine-cert.cer"
 Remove-Item $resultFile -ErrorAction SilentlyContinue
 Remove-Item $certFile -ErrorAction SilentlyContinue
 
-# Script to run as SYSTEM
-$enrollScript = @"
-`$ErrorActionPreference = 'Continue'
-`$log = @()
-`$log += "=== SYSTEM Enrollment Log ==="
-`$log += "Time: `$(Get-Date)"
-`$log += "Identity: `$(whoami)"
-`$log += ""
+# Script to run as SYSTEM (Built as string array to avoid nested here-string issues)
+$scriptLines = @(
+    "`$ErrorActionPreference = 'Continue'",
+    "`$log = @()",
+    "`$log += '=== SYSTEM Enrollment Log ==='",
+    "`$log += 'Time: $(Get-Date)'",
+    "`$log += 'Identity: ' + (whoami)",
+    "`$log += ''",
+    "",
+    "# Check Kerberos tickets",
+    "`$log += 'Kerberos tickets:'",
+    "`$klist = klist -li 0x3e7 2>&1",
+    "`$log += `$klist | Out-String",
+    "",
+    "# Trigger certificate pulse",
+    "`$log += 'Running certutil -pulse...'",
+    "`$pulse = certutil -pulse 2>&1",
+    "`$log += `$pulse | Out-String",
+    "",
+    "# Wait for enrollment",
+    "Start-Sleep -Seconds 5",
+    "",
+    "# Check for certificate",
+    "`$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {",
+    "    `$_.Subject -match 'CN=' + `$env:COMPUTERNAME",
+    "} | Sort-Object NotAfter -Descending | Select-Object -First 1",
+    "",
+    "if (`$cert) {",
+    "    `$log += 'SUCCESS: Certificate found!'",
+    "    `$log += 'Subject: ' + `$cert.Subject",
+    "    `$log += 'Thumbprint: ' + `$cert.Thumbprint",
+    "    `$log += 'Issuer: ' + `$cert.Issuer",
+    "    `$log += 'NotAfter: ' + `$cert.NotAfter",
+    "    `$log += 'HasPrivateKey: ' + `$cert.HasPrivateKey",
+    "",
+    "    # Check SAN",
+    "    `$san = `$cert.DnsNameList | ForEach-Object { `$_.Unicode }",
+    "    `$log += 'SAN DNS Names: ' + (`$san -join ', ')",
+    "",
+    "    # Check EKU",
+    "    `$eku = `$cert.EnhancedKeyUsageList | ForEach-Object { `$_.FriendlyName }",
+    "    `$log += 'EKU: ' + (`$eku -join ', ')",
+    "",
+    "    # Export public cert for verification",
+    "    `$certBytes = `$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)",
+    "    [System.IO.File]::WriteAllBytes('$certFile', `$certBytes)",
+    "} else {",
+    "    `$log += 'FAILED: No certificate found after enrollment'",
+    "",
+    "    # Try to get more info",
+    "    `$log += ''",
+    "    `$log += 'Attempting manual enrollment...'",
+    "    `$inf = @'",
+    "[NewRequest]",
+    "Subject = 'CN=' + `$env:COMPUTERNAME + '.' + (Get-WmiObject Win32_ComputerSystem).Domain",
+    "KeyLength = 2048",
+    "Exportable = FALSE",
+    "MachineKeySet = TRUE",
+    "[RequestAttributes]",
+    "CertificateTemplate = $TemplateName",
+    "'@",
+    "",
+    "    `$inf | Out-File '$env:TEMP\machine.inf' -Encoding ASCII",
+    "    `$req = certreq -new -machine '$env:TEMP\machine.inf' '$env:TEMP\machine.csr' 2>&1",
+    "    `$log += `$req | Out-String",
+    "}",
+    "",
+    "`$log | Out-File '$resultFile' -Encoding UTF8"
+)
 
-# Check Kerberos tickets
-`$log += "Kerberos tickets:"
-`$klist = klist -li 0x3e7 2>&1
-`$log += `$klist | Out-String
-
-# Trigger certificate pulse
-`$log += "Running certutil -pulse..."
-`$pulse = certutil -pulse 2>&1
-`$log += `$pulse | Out-String
-
-# Wait for enrollment
-Start-Sleep -Seconds 5
-
-# Check for certificate
-`$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
-    `$_.Subject -match "CN=`$env:COMPUTERNAME"
-} | Sort-Object NotAfter -Descending | Select-Object -First 1
-
-if (`$cert) {
-    `$log += "SUCCESS: Certificate found!"
-    `$log += "Subject: `$(`$cert.Subject)"
-    `$log += "Thumbprint: `$(`$cert.Thumbprint)"
-    `$log += "Issuer: `$(`$cert.Issuer)"
-    `$log += "NotAfter: `$(`$cert.NotAfter)"
-    `$log += "HasPrivateKey: `$(`$cert.HasPrivateKey)"
-
-    # Check SAN
-    `$san = `$cert.DnsNameList | ForEach-Object { `$_.Unicode }
-    `$log += "SAN DNS Names: `$(`$san -join ', ')"
-
-    # Check EKU
-    `$eku = `$cert.EnhancedKeyUsageList | ForEach-Object { `$_.FriendlyName }
-    `$log += "EKU: `$(`$eku -join ', ')"
-
-    # Export public cert for verification
-    `$certBytes = `$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-    [System.IO.File]::WriteAllBytes("$certFile", `$certBytes)
-} else {
-    `$log += "FAILED: No certificate found after enrollment"
-
-    # Try to get more info
-    `$log += ""
-    `$log += "Attempting manual enrollment..."
-    `$inf = @"
-[NewRequest]
-Subject = "CN=`$env:COMPUTERNAME.`$((Get-WmiObject Win32_ComputerSystem).Domain)"
-KeyLength = 2048
-Exportable = FALSE
-MachineKeySet = TRUE
-[RequestAttributes]
-CertificateTemplate = $TemplateName
-"@
-    `$inf | Out-File "`$env:TEMP\machine.inf" -Encoding ASCII
-    `$req = certreq -new -machine "`$env:TEMP\machine.inf" "`$env:TEMP\machine.csr" 2>&1
-    `$log += `$req | Out-String
-}
-
-`$log | Out-File "$resultFile" -Encoding UTF8
-"@
+$enrollScript = $scriptLines -join "`r`n"
 
 # Save script to temp file
 $scriptFile = "$env:TEMP\enroll-as-system.ps1"
