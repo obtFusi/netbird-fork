@@ -114,7 +114,7 @@ jobs:
           retention-days: 30
 
   release:
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     env:
       flags: ""
     steps:
