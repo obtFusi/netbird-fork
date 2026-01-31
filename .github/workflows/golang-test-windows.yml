@@ -63,10 +63,20 @@ jobs:
       - run: PsExec64 -s -w ${{ github.workspace }} C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe env -w GOMODCACHE=${{ env.cache }}
       - run: PsExec64 -s -w ${{ github.workspace }} C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe env -w GOCACHE=${{ env.modcache }}
       - run: PsExec64 -s -w ${{ github.workspace }} C:\hostedtoolcache\windows\go\${{ steps.go.outputs.go-version }}\x64\bin\go.exe mod tidy
+      # [FORK EXTENSION] Write package list to file instead of env var.
+      # Upstream uses a single env var + cmd.exe call, but our Machine Tunnel
+      # packages push the command line beyond cmd.exe's 8191 char limit.
+      # This is functionally equivalent: same packages, same filter criteria.
+      # Upstream ref: netbirdio/netbird .github/workflows/golang-test-windows.yml
       - name: Write package list
         run: |
           go list ./... | Where-Object { $_ -notmatch '/management' } | Where-Object { $_ -notmatch '/relay' } | Where-Object { $_ -notmatch '/signal' } | Out-File -FilePath packages.txt -Encoding utf8
 
+      # [FORK EXTENSION] Test in batches of 30 packages via PsExec64.
+      # Upstream runs all packages in a single cmd.exe invocation which works
+      # for fewer packages but exceeds cmd.exe's 8191 char limit with our
+      # additional Machine Tunnel packages. Same test flags are preserved:
+      # -tags=devcert -timeout 10m -p 1 (serialized execution).
       - name: test
         run: |
           # Read packages and test in batches to avoid cmd.exe command line length limit
