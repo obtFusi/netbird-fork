@@ -50,18 +50,22 @@ type UniversalUDPMuxParams struct {
 
 // NewUniversalUDPMuxDefault creates an implementation of UniversalUDPMux embedding UDPMux
 func NewUniversalUDPMuxDefault(params UniversalUDPMuxParams) *UniversalUDPMuxDefault {
+	log.Info(">>> NewUniversalUDPMuxDefault: starting...")
 	if params.Logger == nil {
+		log.Info(">>> NewUniversalUDPMuxDefault: creating logger...")
 		params.Logger = getLogger()
 	}
 	if params.XORMappedAddrCacheTTL == 0 {
 		params.XORMappedAddrCacheTTL = time.Second * 25
 	}
+	log.Info(">>> NewUniversalUDPMuxDefault: creating struct...")
 
 	m := &UniversalUDPMuxDefault{
 		params:       params,
 		xorMappedMap: make(map[string]*xorMapped),
 	}
 
+	log.Info(">>> NewUniversalUDPMuxDefault: wrapping UDP connection...")
 	// wrap UDP connection, process server reflexive messages
 	// before they are passed to the UDPMux connection handler (connWorker)
 	m.params.UDPConn = &UDPConn{
@@ -72,12 +76,15 @@ func NewUniversalUDPMuxDefault(params UniversalUDPMuxParams) *UniversalUDPMuxDef
 		address:    params.WGAddress,
 	}
 
+	log.Info(">>> NewUniversalUDPMuxDefault: creating udpMuxParams...")
 	udpMuxParams := Params{
 		Logger:  params.Logger,
 		UDPConn: m.params.UDPConn,
 		Net:     m.params.Net,
 	}
+	log.Info(">>> NewUniversalUDPMuxDefault: calling NewSingleSocketUDPMux...")
 	m.SingleSocketUDPMux = NewSingleSocketUDPMux(udpMuxParams)
+	log.Info(">>> NewUniversalUDPMuxDefault: NewSingleSocketUDPMux returned, done!")
 
 	return m
 }

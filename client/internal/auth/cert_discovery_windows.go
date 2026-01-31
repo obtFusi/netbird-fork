@@ -17,8 +17,6 @@ import (
 	"unsafe"
 
 	log "github.com/sirupsen/logrus"
-
-	"github.com/netbirdio/netbird/client/internal/tunnel"
 )
 
 // Windows API constants
@@ -372,7 +370,7 @@ func scoreCertificate(cert *x509.Certificate, config *CertDiscoveryConfig) int {
 		}
 	} else {
 		// Default: require Client Authentication
-		if hasEKU(cert, tunnel.DefaultClientAuthEKU) {
+		if hasEKU(cert, DefaultClientAuthEKU) {
 			score += 50
 		}
 	}

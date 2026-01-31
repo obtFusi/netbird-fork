@@ -8,8 +8,6 @@ package auth
 import (
 	"crypto/x509"
 	"fmt"
-
-	"github.com/netbirdio/netbird/client/internal/tunnel"
 )
 
 // WinCertSigner is not supported on non-Windows platforms
@@ -31,7 +29,7 @@ func FindMachineCertificate(criteria CertSelectionCriteria) (*WinCertSigner, err
 
 // ParseMachineIdentity extracts machine identity from a certificate's SAN DNSName
 // This is a shared implementation that works on all platforms
-func ParseMachineIdentity(cert *x509.Certificate) (*tunnel.MachineIdentity, error) {
+func ParseMachineIdentity(cert *x509.Certificate) (*MachineIdentity, error) {
 	if cert == nil {
 		return nil, fmt.Errorf("certificate is nil")
 	}
@@ -40,7 +38,7 @@ func ParseMachineIdentity(cert *x509.Certificate) (*tunnel.MachineIdentity, erro
 	for _, dnsName := range cert.DNSNames {
 		hostname, domain, ok := splitFQDN(dnsName)
 		if ok {
-			return &tunnel.MachineIdentity{
+			return &MachineIdentity{
 				Hostname:       hostname,
 				Domain:         domain,
 				FQDN:           dnsName,
