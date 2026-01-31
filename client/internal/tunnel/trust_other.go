@@ -1,8 +1,8 @@
-//go:build windows
-// +build windows
+//go:build !windows
+// +build !windows
 
 // Package tunnel provides trust establishment for management server connections.
-// This file implements CA certificate installation and certificate pinning for Windows.
+// This file provides stub implementations for non-Windows platforms.
 package tunnel
 
 import (
@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -21,17 +20,15 @@ import (
 
 // TrustConfig holds configuration for server certificate verification.
 type TrustConfig struct {
-	// CACertPath is the path to a CA certificate file to install in Windows Trusted Root.
-	// Used for Option 1: CA-Cert installation.
+	// CACertPath is the path to a CA certificate file.
+	// On non-Windows platforms, this is used for reference only.
 	CACertPath string `yaml:"management_ca_cert,omitempty" json:"management_ca_cert,omitempty"`
 
 	// CertPin is a SHA-256 fingerprint of the server certificate or CA certificate.
 	// Format: "sha256//BASE64HASH"
-	// Used for Option 2: Certificate pinning.
 	CertPin string `yaml:"management_cert_pin,omitempty" json:"management_cert_pin,omitempty"`
 
 	// BackupPin is an optional backup pin for certificate rotation.
-	// Allows pinning to a new certificate before rotation occurs.
 	BackupPin string `yaml:"management_cert_pin_backup,omitempty" json:"management_cert_pin_backup,omitempty"`
 }
 
@@ -47,18 +44,14 @@ var ErrNoCertPresented = errors.New("no server certificate presented")
 // ErrCACertNotFound indicates the CA certificate file was not found.
 var ErrCACertNotFound = errors.New("ca certificate file not found")
 
+// ErrNotSupported indicates the operation is not supported on this platform.
+var ErrNotSupported = errors.New("operation not supported on this platform")
+
 // VerifyServerCert returns a TLS verification callback that validates the server
-// certificate against configured pins or installed CA certificates.
+// certificate against configured pins.
 //
-// The verification order is:
-// 1. If CertPin is set, verify against the pin (and BackupPin if primary fails)
-// 2. Otherwise, rely on the standard TLS certificate chain validation
-//
-// Usage with tls.Config:
-//
-//	tlsConfig := &tls.Config{
-//	    VerifyPeerCertificate: VerifyServerCert(trustConfig),
-//	}
+// On non-Windows platforms, only certificate pinning is supported.
+// CA certificate installation requires platform-specific implementation.
 func VerifyServerCert(cfg *TrustConfig) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
@@ -70,14 +63,12 @@ func VerifyServerCert(cfg *TrustConfig) func(rawCerts [][]byte, verifiedChains [
 			return fmt.Errorf("parse server certificate: %w", err)
 		}
 
-		// Option 2: Certificate Pinning
+		// Certificate Pinning (works on all platforms)
 		if cfg != nil && cfg.CertPin != "" {
 			return verifyPin(serverCert, cfg.CertPin, cfg.BackupPin)
 		}
 
-		// Option 1: Standard chain validation (CA must be installed)
-		// This is handled by the standard TLS stack when InsecureSkipVerify is false.
-		// If we reach here with verifiedChains populated, the chain was already validated.
+		// Standard chain validation (handled by TLS stack)
 		if len(verifiedChains) == 0 {
 			log.Debug("No verified chains - relying on system trust store")
 		} else {
@@ -90,7 +81,6 @@ func VerifyServerCert(cfg *TrustConfig) func(rawCerts [][]byte, verifiedChains [
 
 // verifyPin checks the server certificate against the configured pin(s).
 func verifyPin(cert *x509.Certificate, primaryPin, backupPin string) error {
-	// Calculate the certificate's SHA-256 fingerprint
 	certHash := sha256.Sum256(cert.Raw)
 	certHashB64 := base64.StdEncoding.EncodeToString(certHash[:])
 
@@ -108,7 +98,6 @@ func verifyPin(cert *x509.Certificate, primaryPin, backupPin string) error {
 		}
 	}
 
-	// Both pins failed
 	expectedPin := extractPinHash(primaryPin)
 	return fmt.Errorf("%w: expected [%s] but got [%s]",
 		ErrCertPinMismatch,
@@ -130,7 +119,7 @@ func matchPin(certHashB64, pin string) error {
 	return ErrCertPinMismatch
 }
 
-// extractPinHash extracts the hash from a pin string, handling format validation.
+// extractPinHash extracts the hash from a pin string.
 func extractPinHash(pin string) string {
 	if strings.HasPrefix(pin, "sha256//") {
 		return strings.TrimPrefix(pin, "sha256//")
@@ -138,7 +127,7 @@ func extractPinHash(pin string) string {
 	return pin
 }
 
-// truncateHash truncates a hash string for display in error messages.
+// truncateHash truncates a hash string for display.
 func truncateHash(hash string, maxLen int) string {
 	if len(hash) <= maxLen {
 		return hash
@@ -146,67 +135,19 @@ func truncateHash(hash string, maxLen int) string {
 	return hash[:maxLen]
 }
 
-// InstallCACert installs a CA certificate into the Windows Trusted Root store.
-// This requires Administrator privileges.
-//
-// The certificate is installed to the LocalMachine\Root store, making it trusted
-// for all users on the machine.
-//
-// Note: This is a security-sensitive operation. The CA certificate should be
-// obtained through a secure channel (e.g., secure bootstrap bundle, verified download).
+// InstallCACert is not supported on non-Windows platforms.
+// Use system-specific methods (e.g., update-ca-certificates on Linux).
 func InstallCACert(certPath string) error {
-	// Verify file exists
-	if _, err := os.Stat(certPath); os.IsNotExist(err) {
-		return fmt.Errorf("%w: %s", ErrCACertNotFound, certPath)
-	}
-
-	// Verify it's a valid certificate
-	if err := validateCertFile(certPath); err != nil {
-		return fmt.Errorf("invalid certificate file: %w", err)
-	}
-
-	log.Infof("Installing CA certificate to Windows Trusted Root: %s", certPath)
-
-	// Use certutil to add to root store
-	// -addstore root: Add to Trusted Root Certification Authorities
-	// -f: Force overwrite if exists
-	cmd := exec.Command("certutil", "-addstore", "-f", "root", certPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("certutil -addstore failed: %w, output: %s", err, string(output))
-	}
-
-	log.Info("CA certificate installed successfully to Trusted Root store")
-	return nil
+	return fmt.Errorf("%w: CA certificate installation requires platform-specific implementation", ErrNotSupported)
 }
 
-// RemoveCACert removes a CA certificate from the Windows Trusted Root store.
-// The certificate is identified by its SHA-1 thumbprint.
-//
-// This can be used to clean up bootstrap CA certificates after domain join
-// when enterprise CA trust is deployed via GPO.
+// RemoveCACert is not supported on non-Windows platforms.
 func RemoveCACert(thumbprint string) error {
-	if thumbprint == "" {
-		return errors.New("thumbprint is required")
-	}
-
-	log.Infof("Removing CA certificate from Trusted Root: %s", thumbprint)
-
-	// Use certutil to delete from root store
-	cmd := exec.Command("certutil", "-delstore", "root", thumbprint)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("certutil -delstore failed: %w, output: %s", err, string(output))
-	}
-
-	log.Info("CA certificate removed from Trusted Root store")
-	return nil
+	return fmt.Errorf("%w: CA certificate removal requires platform-specific implementation", ErrNotSupported)
 }
 
 // GetCertPin calculates the SHA-256 pin for a certificate file.
 // Returns the pin in the format "sha256//BASE64HASH".
-//
-// This can be used to generate the pin value for configuration.
 func GetCertPin(certPath string) (string, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
@@ -225,13 +166,11 @@ func GetCertPin(certPath string) (string, error) {
 }
 
 // GetCertPinFromBytes calculates the SHA-256 pin for raw certificate bytes.
-// The bytes can be either DER-encoded or PEM-encoded.
 func GetCertPinFromBytes(certBytes []byte) (string, error) {
 	if len(certBytes) == 0 {
 		return "", errors.New("empty certificate data")
 	}
 
-	// Try PEM decode first
 	block, _ := pem.Decode(certBytes)
 	if block != nil {
 		certBytes = block.Bytes
@@ -247,59 +186,18 @@ func GetCertPinFromX509(cert *x509.Certificate) string {
 	return "sha256//" + base64.StdEncoding.EncodeToString(hash[:])
 }
 
-// validateCertFile checks if a file contains a valid certificate.
-func validateCertFile(certPath string) error {
-	certData, err := os.ReadFile(certPath)
-	if err != nil {
-		return err
-	}
-
-	// Try PEM format first
-	block, _ := pem.Decode(certData)
-	if block != nil {
-		_, err = x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return fmt.Errorf("parse PEM certificate: %w", err)
-		}
-		return nil
-	}
-
-	// Try DER format
-	_, err = x509.ParseCertificate(certData)
-	if err != nil {
-		return fmt.Errorf("parse DER certificate: %w", err)
-	}
-
-	return nil
-}
-
-// IsCACertInstalled checks if a CA certificate with the given thumbprint
-// is installed in the Windows Trusted Root store.
+// IsCACertInstalled is not supported on non-Windows platforms.
 func IsCACertInstalled(thumbprint string) (bool, error) {
-	if thumbprint == "" {
-		return false, errors.New("thumbprint is required")
-	}
-
-	// Use certutil to check if cert exists in root store
-	cmd := exec.Command("certutil", "-verifystore", "root", thumbprint)
-	err := cmd.Run()
-	if err != nil {
-		// Non-zero exit means cert not found in store, which is not an error
-		return false, nil //nolint:nilerr // certutil exit code indicates absence, not failure
-	}
-
-	return true, nil
+	return false, fmt.Errorf("%w: CA certificate verification requires platform-specific implementation", ErrNotSupported)
 }
 
-// GetCertThumbprint calculates the SHA-1 thumbprint of a certificate file.
-// This is the format used by Windows certificate stores.
+// GetCertThumbprint calculates the SHA-256 thumbprint of a certificate file.
 func GetCertThumbprint(certPath string) (string, error) {
 	certData, err := os.ReadFile(certPath)
 	if err != nil {
 		return "", err
 	}
 
-	// Try PEM format first
 	block, _ := pem.Decode(certData)
 	if block != nil {
 		certData = block.Bytes
@@ -310,48 +208,26 @@ func GetCertThumbprint(certPath string) (string, error) {
 		return "", fmt.Errorf("parse certificate: %w", err)
 	}
 
-	// SHA-1 thumbprint (standard Windows format)
 	thumbprint := fmt.Sprintf("%X", sha256.Sum256(cert.Raw))
 	return thumbprint, nil
 }
 
-// TrustBootstrap performs the complete trust establishment process.
-// It installs the CA certificate and verifies the installation.
+// TrustBootstrap performs trust establishment.
+// On non-Windows platforms, only certificate pinning is fully supported.
 func TrustBootstrap(cfg *TrustConfig) error {
 	if cfg == nil {
 		return errors.New("trust config is nil")
 	}
 
-	// If using pinning, no installation needed
 	if cfg.CertPin != "" {
 		log.Info("Using certificate pinning - no CA installation required")
 		return nil
 	}
 
-	// Install CA certificate if specified
 	if cfg.CACertPath != "" {
-		if err := InstallCACert(cfg.CACertPath); err != nil {
-			return fmt.Errorf("install CA certificate: %w", err)
-		}
-
-		// Verify installation
-		thumbprint, err := GetCertThumbprint(cfg.CACertPath)
-		if err != nil {
-			log.Warnf("Could not get thumbprint to verify installation: %v", err)
-			return nil
-		}
-
-		installed, err := IsCACertInstalled(thumbprint)
-		if err != nil {
-			log.Warnf("Could not verify CA installation: %v", err)
-			return nil
-		}
-
-		if !installed {
-			return errors.New("ca certificate installation verification failed")
-		}
-
-		log.Info("CA certificate installation verified")
+		log.Warn("CA certificate installation not supported on this platform")
+		log.Warn("Please install the CA certificate manually using system tools")
+		return fmt.Errorf("%w: use certificate pinning instead", ErrNotSupported)
 	}
 
 	return nil
