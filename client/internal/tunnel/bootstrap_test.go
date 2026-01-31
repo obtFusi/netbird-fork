@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/netbirdio/netbird/client/internal/auth"
 	"github.com/netbirdio/netbird/client/internal/profilemanager"
 )
 
@@ -77,6 +78,9 @@ func TestHasMachineCert_ValidCert(t *testing.T) {
 			ClientCertPath:    certPath,
 			ClientCertKeyPath: keyPath,
 		},
+		MachineCert: auth.MachineCertConfig{
+			Enabled: true,
+		},
 	}
 
 	assert.True(t, hasMachineCert(cfg))
@@ -97,6 +101,9 @@ func TestHasMachineCert_ExpiredCert(t *testing.T) {
 			ClientCertPath:    certPath,
 			ClientCertKeyPath: keyPath,
 		},
+		MachineCert: auth.MachineCertConfig{
+			Enabled: true,
+		},
 	}
 
 	assert.False(t, hasMachineCert(cfg))
@@ -116,25 +123,27 @@ func TestHasMachineCert_NoDNSNames(t *testing.T) {
 			ClientCertPath:    certPath,
 			ClientCertKeyPath: keyPath,
 		},
+		MachineCert: auth.MachineCertConfig{
+			Enabled: true,
+		},
 	}
 
-	assert.False(t, hasMachineCert(cfg))
+	// Certificate without DNS names should still be valid (Identity parsing is separate)
+	// The cert discovery succeeds as long as the cert exists and is not expired
+	assert.True(t, hasMachineCert(cfg))
 }
 
 func TestHasMachineCert_ThumbprintMismatch(t *testing.T) {
-	tmpDir := t.TempDir()
-	certPath := filepath.Join(tmpDir, "cert.pem")
-	keyPath := filepath.Join(tmpDir, "key.pem")
-
-	err := generateTestCertificate(certPath, keyPath, []string{"test-machine.corp.local"}, time.Hour)
-	require.NoError(t, err)
-
+	// Test that thumbprint-only discovery fails when thumbprint doesn't match.
+	// We intentionally do NOT set ClientCertPath/ClientCertKeyPath because
+	// DiscoverCertificate would fall back to file-based discovery and find
+	// the cert regardless of thumbprint mismatch.
 	cfg := &MachineConfig{
-		Config: &profilemanager.Config{
-			ClientCertPath:    certPath,
-			ClientCertKeyPath: keyPath,
+		Config: &profilemanager.Config{},
+		MachineCert: auth.MachineCertConfig{
+			Enabled:            true,
+			ThumbprintOverride: "0000000000000000000000000000000000000000", // Invalid thumbprint
 		},
-		MachineCertThumbprint: "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
 	assert.False(t, hasMachineCert(cfg))

@@ -154,10 +154,13 @@ func isZeros(ip net.IP) bool {
 
 // NewSingleSocketUDPMux creates an implementation of UDPMux
 func NewSingleSocketUDPMux(params Params) *SingleSocketUDPMux {
+	log.Info(">>> NewSingleSocketUDPMux: starting...")
 	if params.Logger == nil {
+		log.Info(">>> NewSingleSocketUDPMux: creating logger...")
 		params.Logger = getLogger()
 	}
 
+	log.Info(">>> NewSingleSocketUDPMux: creating mux struct...")
 	mux := &SingleSocketUDPMux{
 		addressMap:       map[string][]*udpMuxedConn{},
 		params:           params,
@@ -172,16 +175,24 @@ func NewSingleSocketUDPMux(params Params) *SingleSocketUDPMux {
 			},
 		},
 	}
+	log.Info(">>> NewSingleSocketUDPMux: mux struct created, calling updateLocalAddresses...")
 
 	mux.updateLocalAddresses()
+	log.Info(">>> NewSingleSocketUDPMux: updateLocalAddresses returned, done!")
 	return mux
 }
 
 func (m *SingleSocketUDPMux) updateLocalAddresses() {
+	log.Info(">>> updateLocalAddresses: starting...")
 	var localAddrsForUnspecified []net.Addr
-	if addr, ok := m.params.UDPConn.LocalAddr().(*net.UDPAddr); !ok {
-		m.params.Logger.Errorf("LocalAddr is not a net.UDPAddr, got %T", m.params.UDPConn.LocalAddr())
+	log.Infof(">>> updateLocalAddresses: getting LocalAddr from UDPConn (type=%T)...", m.params.UDPConn)
+	localAddr := m.params.UDPConn.LocalAddr()
+	log.Infof(">>> updateLocalAddresses: LocalAddr=%v (type=%T)", localAddr, localAddr)
+	if addr, ok := localAddr.(*net.UDPAddr); !ok {
+		log.Errorf(">>> updateLocalAddresses: LocalAddr is not a net.UDPAddr, got %T", localAddr)
+		m.params.Logger.Errorf("LocalAddr is not a net.UDPAddr, got %T", localAddr)
 	} else if ok && addr.IP.IsUnspecified() {
+		log.Infof(">>> updateLocalAddresses: address %v is unspecified, building local addresses...", addr)
 		// For unspecified addresses, the correct behavior is to return errListenUnspecified, but
 		// it will break the applications that are already using unspecified UDP connection
 		// with SingleSocketUDPMux, so print a warn log and create a local address list for mux.
@@ -198,15 +209,21 @@ func (m *SingleSocketUDPMux) updateLocalAddresses() {
 		default:
 			m.params.Logger.Errorf("LocalAddr expected IPV4 or IPV6, got %T", m.params.UDPConn.LocalAddr())
 		}
+		log.Infof(">>> updateLocalAddresses: networks=%v, checking if Net is nil...", networks)
 		if len(networks) > 0 {
 			if m.params.Net == nil {
+				log.Info(">>> updateLocalAddresses: Net is nil, creating stdnet.NewNet...")
 				var err error
 				if m.params.Net, err = stdnet.NewNet(context.Background(), nil); err != nil {
+					log.Errorf(">>> updateLocalAddresses: stdnet.NewNet failed: %v", err)
 					m.params.Logger.Errorf("failed to get create network: %v", err)
 				}
+				log.Info(">>> updateLocalAddresses: stdnet.NewNet created")
 			}
 
+			log.Info(">>> updateLocalAddresses: calling localInterfaces...")
 			ips, err := localInterfaces(m.params.Net, m.params.InterfaceFilter, nil, networks, true)
+			log.Infof(">>> updateLocalAddresses: localInterfaces returned %d IPs, err=%v", len(ips), err)
 			if err == nil {
 				for _, ip := range ips {
 					localAddrsForUnspecified = append(localAddrsForUnspecified, &net.UDPAddr{IP: ip, Port: addr.Port})
@@ -215,11 +232,15 @@ func (m *SingleSocketUDPMux) updateLocalAddresses() {
 				m.params.Logger.Errorf("failed to get local interfaces for unspecified addr: %v", err)
 			}
 		}
+	} else {
+		log.Infof(">>> updateLocalAddresses: address %v is specified (not unspecified), no local address enumeration needed", addr)
 	}
 
+	log.Info(">>> updateLocalAddresses: acquiring mutex...")
 	m.mu.Lock()
 	m.localAddrsForUnspecified = localAddrsForUnspecified
 	m.mu.Unlock()
+	log.Info(">>> updateLocalAddresses: done!")
 }
 
 // LocalAddr returns the listening address of this SingleSocketUDPMux

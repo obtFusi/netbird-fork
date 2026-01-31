@@ -20,7 +20,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/netbirdio/netbird/client/internal/tunnel"
 	mgmtProto "github.com/netbirdio/netbird/shared/management/proto"
 	"github.com/netbirdio/netbird/util/embeddedroots"
 )
@@ -54,7 +53,7 @@ type MTLSClientConfig struct {
 	ServerAddr string
 
 	// MachineCert is the machine certificate configuration
-	MachineCert tunnel.MachineCertConfig
+	MachineCert MachineCertConfig
 
 	// FallbackCertPath is the path to a fallback PEM certificate
 	FallbackCertPath string
@@ -323,7 +322,7 @@ type MachineStatus struct {
 }
 
 // GetIdentity returns the machine identity from the loaded certificate
-func (c *MTLSClient) GetIdentity() *tunnel.MachineIdentity {
+func (c *MTLSClient) GetIdentity() *MachineIdentity {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

@@ -1,15 +1,11 @@
 package device
 
 import (
-	"os"
-
 	"golang.zx2c4.com/wireguard/device"
 )
 
 func wgLogLevel() int {
-	if os.Getenv("NB_WG_DEBUG") == "true" {
-		return device.LogLevelVerbose
-	} else {
-		return device.LogLevelSilent
-	}
+	// DEBUG: Temporarily force verbose logging to diagnose device.Up() blocking (Issue #113)
+	// TODO: Revert after debugging - should check NB_WG_DEBUG env var
+	return device.LogLevelVerbose
 }

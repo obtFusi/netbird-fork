@@ -1,0 +1,39 @@
+name: Check Proto Generation
+
+on:
+  pull_request:
+    paths:
+      - 'shared/management/proto/*.proto'
+      - 'Makefile'
+
+jobs:
+  check-generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Install Protobuf Tools
+        run: |
+          PROTOC_VERSION="33.3"
+          curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
+          sudo unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          rm /tmp/protoc.zip
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: Run make generate
+        run: make generate
+
+      - name: Check for changes
+        run: |
+          git diff --exit-code
+          if [ $? -ne 0 ]; then
+            echo "Error: 'make generate' resulted in changes. Please run 'make generate' locally and commit the changes."
+            exit 1
+          fi

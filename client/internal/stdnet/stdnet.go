@@ -16,6 +16,7 @@ import (
 
 	"github.com/pion/transport/v3"
 	"github.com/pion/transport/v3/stdnet"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/netbirdio/netbird/client/iface/netstack"
 )
@@ -65,15 +66,20 @@ func NewNetWithDiscover(ctx context.Context, iFaceDiscover ExternalIFaceDiscover
 
 // NewNet creates a new StdNet instance.
 func NewNet(ctx context.Context, disallowList []string) (*Net, error) {
+	log.Info(">>> stdnet.NewNet: starting...")
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	log.Info(">>> stdnet.NewNet: creating Net struct...")
 	n := &Net{
 		iFaceDiscover:   pionDiscover{},
 		interfaceFilter: InterfaceFilter(disallowList),
 		ctx:             ctx,
 	}
-	return n, n.UpdateInterfaces()
+	log.Info(">>> stdnet.NewNet: calling UpdateInterfaces...")
+	err := n.UpdateInterfaces()
+	log.Infof(">>> stdnet.NewNet: UpdateInterfaces returned, err=%v", err)
+	return n, err
 }
 
 // resolveAddr performs DNS resolution with context support and timeout.
@@ -127,21 +133,31 @@ func (n *Net) resolveAddr(network, address string) (netip.AddrPort, error) {
 // The interfaces are discovered by an external iFaceDiscover function or by a default discoverer if the external one
 // wasn't specified.
 func (n *Net) UpdateInterfaces() (err error) {
+	log.Info(">>> UpdateInterfaces: acquiring mutex...")
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	log.Info(">>> UpdateInterfaces: mutex acquired, calling updateInterfaces()...")
 
-	return n.updateInterfaces()
+	err = n.updateInterfaces()
+	log.Infof(">>> UpdateInterfaces: updateInterfaces() returned, err=%v", err)
+	return err
 }
 
 func (n *Net) updateInterfaces() (err error) {
+	log.Info(">>> updateInterfaces: calling iFaceDiscover.iFaces()...")
 	allIfaces, err := n.iFaceDiscover.iFaces()
 	if err != nil {
+		log.Errorf(">>> updateInterfaces: iFaces() failed: %v", err)
 		return err
 	}
+	log.Infof(">>> updateInterfaces: iFaces() returned %d interfaces", len(allIfaces))
 
+	log.Info(">>> updateInterfaces: calling filterInterfaces()...")
 	n.interfaces = n.filterInterfaces(allIfaces)
+	log.Infof(">>> updateInterfaces: filterInterfaces() returned %d interfaces", len(n.interfaces))
 
 	n.lastUpdate = time.Now()
+	log.Info(">>> updateInterfaces: done!")
 
 	return nil
 }
@@ -194,15 +210,22 @@ func (n *Net) InterfaceByName(name string) (*transport.Interface, error) {
 }
 
 func (n *Net) filterInterfaces(interfaces []*transport.Interface) []*transport.Interface {
+	log.Infof(">>> filterInterfaces: starting with %d interfaces, filter=%v", len(interfaces), n.interfaceFilter != nil)
 	if n.interfaceFilter == nil {
+		log.Info(">>> filterInterfaces: no filter, returning all interfaces")
 		return interfaces
 	}
 	var result []*transport.Interface
-	for _, iface := range interfaces {
+	for i, iface := range interfaces {
+		log.Infof(">>> filterInterfaces: checking interface %d: %s...", i, iface.Name)
 		if n.interfaceFilter(iface.Name) {
+			log.Infof(">>> filterInterfaces: interface %s ALLOWED", iface.Name)
 			result = append(result, iface)
+		} else {
+			log.Infof(">>> filterInterfaces: interface %s FILTERED OUT", iface.Name)
 		}
 	}
+	log.Infof(">>> filterInterfaces: done, returning %d interfaces", len(result))
 	return result
 }
 
