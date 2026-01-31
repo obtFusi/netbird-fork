@@ -74,3 +74,12 @@ clean:
 # Quick test build (no CGO, fast feedback)
 build-quick: build-windows-nocgo
 	@echo "Quick build complete: $(DIST_DIR)/netbird-machine-nocgo.exe"
+
+# Generate Go code from Protobuf definitions
+generate:
+	@echo "Generating Go code from Protobuf..."
+	@PATH=$(PATH):$(shell go env GOPATH)/bin protoc --go_out=. --go-grpc_out=. \
+		--go_opt=paths=source_relative \
+		--go-grpc_opt=paths=source_relative \
+		shared/management/proto/management.proto
+	@echo "Generation complete."
