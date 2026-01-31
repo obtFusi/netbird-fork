@@ -80,3 +80,4 @@ docker-compose.override.yml
 
 # Security Audits - NICHT ins Public Repo!
 docs/AUDIT-*.md
+RELEASE-STATUS.html
