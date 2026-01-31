@@ -19,8 +19,6 @@ import (
 	"unsafe"
 
 	log "github.com/sirupsen/logrus"
-
-	"github.com/netbirdio/netbird/client/internal/tunnel"
 )
 
 // NCrypt API constants for signing
@@ -66,7 +64,7 @@ type WinCertSigner struct {
 	cert *x509.Certificate
 
 	// identity contains the parsed machine identity
-	identity *tunnel.MachineIdentity
+	identity *MachineIdentity
 
 	// handle is the NCrypt key handle (from CNG)
 	handle uintptr
@@ -104,7 +102,7 @@ type CertSelectionCriteria struct {
 // 5. Newest valid certificate with Client Authentication EKU
 func FindMachineCertificate(criteria CertSelectionCriteria) (*WinCertSigner, error) {
 	config := &CertDiscoveryConfig{
-		MachineCert: tunnel.MachineCertConfig{
+		MachineCert: MachineCertConfig{
 			Enabled:            true,
 			TemplateOID:        criteria.TemplateOID,
 			TemplateName:       criteria.TemplateName,
@@ -139,7 +137,7 @@ func (s *WinCertSigner) Certificate() *x509.Certificate {
 }
 
 // Identity returns the parsed machine identity from the certificate
-func (s *WinCertSigner) Identity() *tunnel.MachineIdentity {
+func (s *WinCertSigner) Identity() *MachineIdentity {
 	return s.identity
 }
 
@@ -388,7 +386,7 @@ func (s *WinCertSigner) Close() error {
 }
 
 // ParseMachineIdentity extracts machine identity from a certificate's SAN DNSName
-func ParseMachineIdentity(cert *x509.Certificate) (*tunnel.MachineIdentity, error) {
+func ParseMachineIdentity(cert *x509.Certificate) (*MachineIdentity, error) {
 	if cert == nil {
 		return nil, fmt.Errorf("certificate is nil")
 	}
@@ -400,7 +398,7 @@ func ParseMachineIdentity(cert *x509.Certificate) (*tunnel.MachineIdentity, erro
 	for _, dnsName := range cert.DNSNames {
 		hostname, domain, ok := splitFQDN(dnsName)
 		if ok {
-			return &tunnel.MachineIdentity{
+			return &MachineIdentity{
 				Hostname:       hostname,
 				Domain:         domain,
 				FQDN:           dnsName,

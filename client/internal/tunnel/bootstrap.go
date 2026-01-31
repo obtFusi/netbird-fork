@@ -6,13 +6,9 @@ package tunnel
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/url"
-	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -22,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
+	"github.com/netbirdio/netbird/client/internal/auth"
 	"github.com/netbirdio/netbird/client/internal/profilemanager"
 	"github.com/netbirdio/netbird/client/ssh"
 	"github.com/netbirdio/netbird/client/system"
@@ -141,11 +138,9 @@ type MachineConfig struct {
 	// Embed standard config
 	*profilemanager.Config
 
-	// MachineCertEnabled indicates whether to use machine certificate authentication.
-	MachineCertEnabled bool
-
-	// MachineCertThumbprint is the expected certificate thumbprint (optional validation).
-	MachineCertThumbprint string
+	// MachineCert contains machine certificate configuration for discovery.
+	// This replaces the old MachineCertEnabled/MachineCertThumbprint fields.
+	MachineCert auth.MachineCertConfig
 
 	// SetupKey for Phase 1 bootstrap (one-time use, should be revoked after Phase 2).
 	SetupKey string
@@ -155,6 +150,9 @@ type MachineConfig struct {
 
 	// DCRoutes are the Domain Controller network CIDRs to route through the tunnel.
 	DCRoutes []string
+
+	// Hostname is the machine hostname for SAN matching during certificate discovery.
+	Hostname string
 }
 
 // DefaultMTLSPort is the default port for mTLS machine tunnel connections.
@@ -176,7 +174,7 @@ func Bootstrap(ctx context.Context, cfg *MachineConfig) (*BootstrapResult, error
 	}
 
 	// Check if machine certificate is available and enabled
-	if cfg.MachineCertEnabled && hasMachineCert(cfg) {
+	if cfg.MachineCert.Enabled && hasMachineCert(cfg) {
 		log.Info("Machine certificate available, attempting mTLS authentication (Phase 2)")
 		result, err := bootstrapWithMTLS(ctx, cfg)
 		if err != nil {
@@ -200,61 +198,75 @@ func Bootstrap(ctx context.Context, cfg *MachineConfig) (*BootstrapResult, error
 	return bootstrapWithSetupKey(ctx, cfg)
 }
 
-// hasMachineCert checks if a valid machine certificate is configured and loadable.
+// hasMachineCert checks if a valid machine certificate can be discovered.
+// It uses auth.DiscoverCertificate() to find certificates from:
+// 1. Windows Certificate Store (via thumbprint or template)
+// 2. File-based certificates (fallback)
 func hasMachineCert(cfg *MachineConfig) bool {
-	if cfg.ClientCertPath == "" || cfg.ClientCertKeyPath == "" {
-		log.Debug("Machine cert paths not configured")
+	discoveryConfig := buildCertDiscoveryConfig(cfg)
+	if discoveryConfig == nil {
+		log.Debug("Certificate discovery not configured")
 		return false
 	}
 
-	// Try to load the certificate
-	cert, err := tls.LoadX509KeyPair(cfg.ClientCertPath, cfg.ClientCertKeyPath)
+	loadedCert, err := auth.DiscoverCertificate(discoveryConfig)
 	if err != nil {
-		log.Debugf("Failed to load machine certificate: %v", err)
+		log.Debugf("Machine certificate discovery failed: %v", err)
 		return false
 	}
 
-	// Parse to check validity
-	if len(cert.Certificate) == 0 {
-		log.Debug("No certificate in loaded key pair")
-		return false
-	}
+	log.WithFields(log.Fields{
+		"thumbprint": loadedCert.Thumbprint,
+		"source":     loadedCert.Source,
+		"dnsNames":   loadedCert.Certificate.DNSNames,
+		"notAfter":   loadedCert.Certificate.NotAfter,
+	}).Debug("Machine certificate discovered")
 
-	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		log.Debugf("Failed to parse machine certificate: %v", err)
-		return false
-	}
-
-	// Check expiry
-	now := time.Now()
-	if now.Before(x509Cert.NotBefore) {
-		log.Debugf("Machine certificate not yet valid (NotBefore: %v)", x509Cert.NotBefore)
-		return false
-	}
-	if now.After(x509Cert.NotAfter) {
-		log.Debugf("Machine certificate expired (NotAfter: %v)", x509Cert.NotAfter)
-		return false
-	}
-
-	// Check for required SAN DNSName
-	if len(x509Cert.DNSNames) == 0 {
-		log.Debug("Machine certificate has no SAN DNSNames")
-		return false
-	}
-
-	// Validate thumbprint if specified
-	if cfg.MachineCertThumbprint != "" {
-		actualThumbprint := fmt.Sprintf("%x", sha256.Sum256(cert.Certificate[0]))
-		if !strings.EqualFold(actualThumbprint, cfg.MachineCertThumbprint) {
-			log.Debugf("Machine certificate thumbprint mismatch: expected %s, got %s",
-				cfg.MachineCertThumbprint, actualThumbprint)
-			return false
-		}
-	}
-
-	log.Debugf("Machine certificate valid: DNSNames=%v, NotAfter=%v", x509Cert.DNSNames, x509Cert.NotAfter)
 	return true
+}
+
+// loadMachineCert discovers and loads the machine certificate for mTLS.
+// Returns a tls.Certificate ready for use in TLS config.
+func loadMachineCert(cfg *MachineConfig) (*tls.Certificate, error) {
+	discoveryConfig := buildCertDiscoveryConfig(cfg)
+	if discoveryConfig == nil {
+		return nil, fmt.Errorf("certificate discovery not configured")
+	}
+
+	loadedCert, err := auth.DiscoverCertificate(discoveryConfig)
+	if err != nil {
+		return nil, fmt.Errorf("discover certificate: %w", err)
+	}
+
+	log.WithFields(log.Fields{
+		"thumbprint": loadedCert.Thumbprint,
+		"source":     loadedCert.Source,
+		"template":   loadedCert.TemplateName,
+	}).Info("Loaded machine certificate for mTLS")
+
+	// Build tls.Certificate with the discovered cert and private key
+	// The private key can be a WinCertSigner (crypto.Signer) for Windows Cert Store
+	tlsCert := &tls.Certificate{
+		Certificate: [][]byte{loadedCert.Certificate.Raw},
+		PrivateKey:  loadedCert.PrivateKey,
+		Leaf:        loadedCert.Certificate,
+	}
+
+	return tlsCert, nil
+}
+
+// buildCertDiscoveryConfig creates the configuration for certificate discovery.
+func buildCertDiscoveryConfig(cfg *MachineConfig) *auth.CertDiscoveryConfig {
+	if !cfg.MachineCert.Enabled {
+		return nil
+	}
+
+	return &auth.CertDiscoveryConfig{
+		MachineCert:      cfg.MachineCert,
+		FallbackCertPath: cfg.ClientCertPath,
+		FallbackKeyPath:  cfg.ClientCertKeyPath,
+		Hostname:         cfg.Hostname,
+	}
 }
 
 // bootstrapWithSetupKey performs Phase 1 bootstrap using a Setup-Key.
@@ -342,15 +354,16 @@ func bootstrapWithMTLS(ctx context.Context, cfg *MachineConfig) (*BootstrapResul
 
 	log.Debugf("Connecting to management server %s with mTLS", mtlsURL)
 
-	// Load client certificate
-	cert, err := tls.LoadX509KeyPair(cfg.ClientCertPath, cfg.ClientCertKeyPath)
+	// Load client certificate from Windows Cert Store or file
+	tlsCert, err := loadMachineCert(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load machine certificate: %w", err)
 	}
 
 	// Create TLS config with client certificate
+	// The certificate's PrivateKey can be a WinCertSigner (crypto.Signer) for Windows Cert Store
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
+		Certificates: []tls.Certificate{*tlsCert},
 		MinVersion:   tls.VersionTLS12,
 	}
 
