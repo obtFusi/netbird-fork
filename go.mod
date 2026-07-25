@@ -17,12 +17,12 @@ require (
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/pflag v1.0.9
 	github.com/vishvananda/netlink v1.3.1
-	golang.org/x/crypto v0.49.0
-	golang.org/x/sys v0.42.0
+	golang.org/x/crypto v0.50.0
+	golang.org/x/sys v0.43.0
 	golang.zx2c4.com/wireguard v0.0.0-20230704135630-469159ecf7d1
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6
 	golang.zx2c4.com/wireguard/windows v0.5.3
-	google.golang.org/grpc v1.80.0
+	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
@@ -115,11 +115,11 @@ require (
 	goauthentik.io/api/v3 v3.2023051.3
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b
 	golang.org/x/mobile v0.0.0-20251113184115-a159579294ab
-	golang.org/x/mod v0.33.0
-	golang.org/x/net v0.52.0
+	golang.org/x/mod v0.34.0
+	golang.org/x/net v0.53.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/term v0.41.0
+	golang.org/x/term v0.42.0
 	golang.org/x/time v0.15.0
 	google.golang.org/api v0.276.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -303,10 +303,10 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/image v0.38.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
-	golang.org/x/tools v0.42.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/tools v0.43.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
